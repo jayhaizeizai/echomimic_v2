@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-RunPod Serverless handler.
-
-核心流程：
-1. 冷启动时：
-   • 检查卷挂载 & 可写
-   • 检查剩余空间
-   • 下载 / 缓存模型到网络卷
-
-2. 每条请求：
-   • 解析输入 → 执行推理 → 返回结果
-
-作者：你
-日期：2025-04-23
+RunPod GPU-serverless handler  ·  EchoMimicV2
+--------------------------------------------
+冷启动：
+    • 探测网络卷 → 校验可写 & 空间
+    • 下载 / 缓存模型到卷
+    • 构建 EchoMimicV2 Pipeline
+请求：
+    • 解析 payload ➜ _infer ➜ 返回 Base64-MP4
 """
+
 from __future__ import annotations
 
 import base64
@@ -23,19 +20,19 @@ import os
 import shutil
 import subprocess
 import sys
-import traceback
 import time
-import numpy as np
+import traceback
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+import numpy as np
 import runpod
 import torch
 from PIL import Image
-from omegaconf import OmegaConf
 from diffusers import AutoencoderKL, DDIMScheduler
+from omegaconf import OmegaConf
 
-# EchoMimicV2 相关模块
+# EchoMimicV2 相关
 from src.models.unet_2d_condition import UNet2DConditionModel
 from src.models.unet_3d_emo import EMOUNet3DConditionModel
 from src.models.whisper.audio2feature import load_audio_model
@@ -44,122 +41,126 @@ from src.models.pose_encoder import PoseEncoder
 from src.utils.dwpose_util import draw_pose_select_v2
 from src.utils.util import save_videos_grid
 
-# ---------------------------------------------------------
-# 环境常量
-# ---------------------------------------------------------
-VOLUME_ROOT = Path("/workspace")           # Network-volume mount point
+# ---------------------------------------------------------------------
+# 1. 网络卷 & 常量
+# ---------------------------------------------------------------------
+VOLUME_ROOT: Optional[Path] = None
+for _p in (Path("/runpod-volume"), Path("/workspace")):
+    if _p.exists():
+        VOLUME_ROOT = _p
+        break
+if VOLUME_ROOT is None:
+    raise RuntimeError("❌  Network Volume 未挂载到 /runpod-volume 或 /workspace")
+
 WEIGHTS_ROOT = VOLUME_ROOT / "pretrained_weights"
-_MIN_FREE_GB = 10                          # 最低可用空间要求
+_MIN_FREE_GB = 10
 _MODELS_READY = False
 
-# ---------------------------------------------------------
-# 日志配置
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+# 2. 日志
+# ---------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-log = logging.getLogger(__name__)
+log = logging.getLogger("handler")
 
-
-# ---------------------------------------------------------
-# 工具函数
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+# 3. 工具函数
+# ---------------------------------------------------------------------
 def _check_volume() -> None:
-    """确保卷已挂载且可写，并且空间充足。"""
-    if not VOLUME_ROOT.exists():
-        raise RuntimeError(f"Network volume {VOLUME_ROOT} NOT mounted.")
-    # 可写检测
-    test_file = VOLUME_ROOT / ".rw_test"
+    """卷必须可写且剩余空间 ≥ _MIN_FREE_GB GiB。"""
+    test = VOLUME_ROOT / ".rw_test"
     try:
-        test_file.write_text("ok")
-        test_file.unlink()
-    except Exception as exc:
-        raise RuntimeError(f"Network volume {VOLUME_ROOT} is read-only: {exc}") from exc
+        test.write_text("ok"); test.unlink()
+    except Exception as e:
+        raise RuntimeError(f"{VOLUME_ROOT} 只读或不可写: {e}")
 
-    # 空间检测
-    total, used, free = shutil.disk_usage(VOLUME_ROOT)
-    free_gb = free / (1024**3)
-    log.info("Free space on network volume: %.2f GB", free_gb)
+    free_gb = shutil.disk_usage(VOLUME_ROOT).free / 1024**3
+    log.info("Free space on %s : %.1f GB", VOLUME_ROOT, free_gb)
     if free_gb < _MIN_FREE_GB:
-        raise RuntimeError(f"Not enough free space ({free_gb:.1f} GB); "
-                           f"need ≥ {_MIN_FREE_GB} GB.")
+        raise RuntimeError(
+            f"剩余空间不足，需 ≥{_MIN_FREE_GB} GB，当前 {free_gb:.1f} GB"
+        )
 
 
 def _git_clone_lfs(repo: str, dst: Path) -> None:
-    """Clone an LFS repo efficiently; skip if directory exists."""
+    """高效克隆 LFS 仓库；若已存在则跳过。"""
     if dst.exists():
         return
-    env = os.environ.copy()
-    env["GIT_LFS_SKIP_SMUDGE"] = "1"
-    subprocess.run(["git", "clone", "--depth", "1", repo, str(dst)],
-                   check=True, env=env)
-    subprocess.run(["git", "-C", str(dst), "lfs", "pull"], check=True)
+    env = os.environ | {"GIT_LFS_SKIP_SMUDGE": "1"}
+    subprocess.run(["git", "clone", "--depth", "1", repo, dst], check=True, env=env)
+    subprocess.run(["git", "-C", dst, "lfs", "pull"], check=True)
 
 
-def download_models() -> None:
-    """Download all required models into the network volume."""
+def _download_models() -> None:
+    """一次性下载 / 缓存模型到网络卷。"""
     global _MODELS_READY
     if _MODELS_READY:
         return
 
-    log.info("Downloading models to %s …", WEIGHTS_ROOT)
+    _check_volume()
+    log.info("📥  Downloading models → %s …", WEIGHTS_ROOT)
     audio_dir = WEIGHTS_ROOT / "audio_processor"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    _git_clone_lfs("https://huggingface.co/BadToBest/EchoMimicV2",
-                   WEIGHTS_ROOT / "EchoMimicV2")
-    _git_clone_lfs("https://huggingface.co/stabilityai/sd-vae-ft-mse",
-                   WEIGHTS_ROOT / "sd-vae-ft-mse")
-    _git_clone_lfs("https://huggingface.co/lambdalabs/"
-                   "sd-image-variations-diffusers",
-                   WEIGHTS_ROOT / "sd-image-variations-diffusers")
+    _git_clone_lfs("https://huggingface.co/BadToBest/EchoMimicV2", WEIGHTS_ROOT / "EchoMimicV2")
+    _git_clone_lfs("https://huggingface.co/stabilityai/sd-vae-ft-mse", WEIGHTS_ROOT / "sd-vae-ft-mse")
+    _git_clone_lfs(
+        "https://huggingface.co/lambdalabs/sd-image-variations-diffusers",
+        WEIGHTS_ROOT / "sd-image-variations-diffusers",
+    )
 
-    tiny_pt = audio_dir / "tiny.pt"
-    if not tiny_pt.exists():
+    tiny = audio_dir / "tiny.pt"
+    if not tiny.exists():
         subprocess.run(
             [
-                "wget", "-q", "-O", str(tiny_pt),
+                "wget",
+                "-q",
+                "-O",
+                tiny,
                 "https://openaipublic.azureedge.net/main/whisper/models/"
-                "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/"
-                "tiny.pt",
+                "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
             ],
             check=True,
         )
 
-    log.info("✅ Models ready.")
+    log.info("✅  Models ready.")
     _MODELS_READY = True
 
+# ---------------------------------------------------------------------
+# 4. Pipeline 构建
+# ---------------------------------------------------------------------
+_PIPELINE: Optional[EchoMimicV2Pipeline] = None
+_CONFIG_YAML = Path("configs/prompts/infer_acc.yaml")  # 相对项目根
 
-# ---------------------------------------------------------
-# 模型初始化（冷启动只执行一次）
-# ---------------------------------------------------------
-_PIPELINE = None                                   # 全局缓存
-_DEFAULT_CONFIG = WEIGHTS_ROOT / ".." / "configs/prompts/infer_acc.yaml"
-
-def _to_abs(p: str) -> str:
-    "把相对路径拼到 WEIGHTS_ROOT 下，绝对路径保持不变"
-    p = p.strip()
-    return p if p.startswith("/") else str((WEIGHTS_ROOT / p).resolve())
+def _abs(p: str | Path) -> str:
+    p = Path(p)
+    return str(p) if p.is_absolute() else str((WEIGHTS_ROOT / p).resolve())
 
 def _build_pipeline() -> EchoMimicV2Pipeline:
-    """参照 infer_acc.py 构建 EchoMimicV2Pipeline。"""
-    cfg = OmegaConf.load(str(_DEFAULT_CONFIG))
+    cfg = OmegaConf.load(str(_CONFIG_YAML))
     weight_dtype = torch.float16 if cfg.weight_dtype == "fp16" else torch.float32
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ---- 路径解析 ----
-    for k in ("pretrained_vae_path", "pretrained_base_model_path",
-              "denoising_unet_path", "reference_unet_path",
-              "pose_encoder_path", "motion_module_path",
-              "audio_model_path", "inference_config"):
-        cfg[k] = _to_abs(cfg[k])
+    # 解析权重路径
+    for k in (
+        "pretrained_vae_path",
+        "pretrained_base_model_path",
+        "denoising_unet_path",
+        "reference_unet_path",
+        "pose_encoder_path",
+        "motion_module_path",
+        "audio_model_path",
+        "inference_config",
+    ):
+        cfg[k] = _abs(cfg[k])
 
     infer_cfg = OmegaConf.load(cfg.inference_config)
 
-    # ---- 模型加载 ----
     vae = AutoencoderKL.from_pretrained(cfg.pretrained_vae_path).to(device, dtype=weight_dtype)
+
     reference_unet = UNet2DConditionModel.from_pretrained(
         cfg.pretrained_base_model_path, subfolder="unet"
     ).to(device=device, dtype=weight_dtype)
@@ -172,60 +173,57 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
             subfolder="unet",
             unet_additional_kwargs=infer_cfg.unet_additional_kwargs,
         ).to(device=device, dtype=weight_dtype)
-    else:
+    else:  # 无 motion-module
         denoising_unet = EMOUNet3DConditionModel.from_pretrained_2d(
-            cfg.pretrained_base_model_path, "",
+            cfg.pretrained_base_model_path,
+            "",
             subfolder="unet",
             unet_additional_kwargs={
                 "use_motion_module": False,
                 "unet_use_temporal_attention": False,
                 "cross_attention_dim": infer_cfg.unet_additional_kwargs.cross_attention_dim,
-            }
+            },
         ).to(device=device, dtype=weight_dtype)
-    denoising_unet.load_state_dict(torch.load(cfg.denoising_unet_path, map_location="cpu"), strict=False)
+    denoising_unet.load_state_dict(
+        torch.load(cfg.denoising_unet_path, map_location="cpu"), strict=False
+    )
 
-    pose_encoder = PoseEncoder(320, conditioning_channels=3,
-                               block_out_channels=(16, 32, 96, 256)).to(device=device, dtype=weight_dtype)
+    pose_encoder = PoseEncoder(
+        320, conditioning_channels=3, block_out_channels=(16, 32, 96, 256)
+    ).to(device=device, dtype=weight_dtype)
     pose_encoder.load_state_dict(torch.load(cfg.pose_encoder_path, map_location="cpu"))
 
-    audio_processor = load_audio_model(model_path=cfg.audio_model_path, device=device)
+    audio_guider = load_audio_model(cfg.audio_model_path, device=device)
     scheduler = DDIMScheduler(**OmegaConf.to_container(infer_cfg.noise_scheduler_kwargs))
 
     pipe = EchoMimicV2Pipeline(
         vae=vae,
         reference_unet=reference_unet,
         denoising_unet=denoising_unet,
-        audio_guider=audio_processor,
+        audio_guider=audio_guider,
         pose_encoder=pose_encoder,
         scheduler=scheduler,
     ).to(device=device, dtype=weight_dtype)
     pipe.eval()
     return pipe
 
-
-# ---------------------------------------------------------
-# 冷启动初始化
-# ---------------------------------------------------------
-def _init_once() -> None:
-    """执行一次性初始化；若失败抛异常让容器直接退出."""
-    _check_volume()
-    download_models()
-    
-    # ---------- 构建推理管线 ----------
+# ---------------------------------------------------------------------
+# 5. 冷启动初始化
+# ---------------------------------------------------------------------
+def _cold_start() -> None:
     global _PIPELINE
+    _download_models()
     _PIPELINE = _build_pipeline()
 
-
 try:
-    _init_once()
-except Exception:  # noqa: BLE001
-    log.exception("❌ Cold-start init failed, exiting container.")
+    _cold_start()
+except Exception as e:
+    log.exception("❌  Cold-start init failed: %s", e)
     sys.exit(1)
 
-
-# ---------------------------------------------------------
-# 推理主逻辑
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+# 6. 推理逻辑（你提供的版本）
+# ---------------------------------------------------------------------
 def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     根据输入执行 EchoMimicV2 推理。
@@ -317,33 +315,29 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     # ---------- 导出 MP4 ----------
     mp4_path = tmp_dir / "result.mp4"
     save_videos_grid(video, str(mp4_path), n_rows=1, fps=fps)
-    with mp4_path.open("rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
+    encoded = base64.b64encode(mp4_path.read_bytes()).decode()
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     return {"video": encoded}
 
-
-# ---------------------------------------------------------
-# RunPod handler
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+# 7. RunPod handler (每请求)
+# ---------------------------------------------------------------------
 def handler(event: Dict[str, Any]) -> Dict[str, Any]:
-    """RunPod serverless entry (per request)."""
     try:
-        log.info("▶️  New request: %s", json.dumps(event)[:500])
+        log.info("▶️  New request")
         payload = event.get("input") or {}
-        result = _infer(payload)
-        log.info("✅  Request finished.")
-        return {"success": True, "output": result}
-    except Exception as exc:  # noqa: BLE001
-        log.error("❌  Exception during request: %s", exc)
+        output = _infer(payload)
+        log.info("✅  Finished")
+        return {"success": True, "output": output}
+    except Exception as exc:
+        log.error("❌  Error  %s", exc)
         log.debug("Traceback:\n%s", traceback.format_exc())
         return {"success": False, "error": str(exc)}
 
-
-# ---------------------------------------------------------
-# RunPod serverless bootstrap
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+# 8. Bootstrap
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
-    log.info("Starting RunPod server …")
+    log.info("Bootstrapping RunPod server (volume=%s)", VOLUME_ROOT)
     runpod.serverless.start({"handler": handler})

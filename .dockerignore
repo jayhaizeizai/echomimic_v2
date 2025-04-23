@@ -1,0 +1,32 @@
+# 排除大型预训练模型
+pretrained_weights/
+outputs/
+output/
+EMTD_dataset/
+ffmpeg-4.4-amd64-static/
+
+# 排除媒体文件
+*.mp4
+*.mp3
+*.wav
+*.jpg
+*.png
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# 排除Git相关文件
+.git/
+.gitattributes
+
+# 排除Python缓存
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+
+# 排除其他大型文件
+Miniconda3-latest-Linux-x86_64.sh 

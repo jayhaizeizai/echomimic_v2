@@ -13,13 +13,15 @@ COPY requirements.txt /app/
 COPY configs/ /app/configs/
 COPY src/ /app/src/
 
-# 安装系统依赖
+# 安装系统依赖 - 确保git和git-lfs被正确安装
 RUN apt-get update && apt-get install -y \
     wget \
     git \
     git-lfs \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git --version \
+    && git lfs install
 
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
@@ -36,10 +38,14 @@ RUN wget https://www.johnvansickle.com/ffmpeg/old-releases/ffmpeg-4.4-amd64-stat
 # 设置环境变量
 ENV FFMPEG_PATH=/app/ffmpeg-4.4-amd64-static
 
-# 下载预训练模型
-RUN mkdir -p pretrained_weights/audio_processor && \
+# 下载预训练模型 - 修复目录已存在问题
+RUN mkdir -p /app/pretrained_weights/audio_processor && \
+    cd /app && \
+    if [ -d "pretrained_weights" ]; then rm -rf pretrained_weights/*; fi && \
     git lfs install && \
-    git clone https://huggingface.co/BadToBest/EchoMimicV2 pretrained_weights && \
+    git clone https://huggingface.co/BadToBest/EchoMimicV2 /tmp/EchoMimicV2 && \
+    cp -r /tmp/EchoMimicV2/* pretrained_weights/ && \
+    rm -rf /tmp/EchoMimicV2 && \
     git clone https://huggingface.co/stabilityai/sd-vae-ft-mse pretrained_weights/sd-vae-ft-mse && \
     git clone https://huggingface.co/lambdalabs/sd-image-variations-diffusers pretrained_weights/sd-image-variations-diffusers && \
     wget -O pretrained_weights/audio_processor/tiny.pt https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt

@@ -27,4 +27,8 @@ Thumbs.db
 # 临时文件
 temp/
 tmp/
-workspace_*/ 
+workspace_*/
+
+# 配置文件 - 防止API密钥等敏感信息泄露
+config.py
+*.env 

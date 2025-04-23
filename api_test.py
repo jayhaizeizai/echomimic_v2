@@ -3,17 +3,30 @@ import base64
 import json
 import time
 import os
+import importlib.util
+import sys
+from pathlib import Path
 
-# RunPod API 配置
-API_KEY = "YOUR_RUNPOD_API_KEY"  # 请替换为您的RunPod API密钥
-ENDPOINT_ID = "YOUR_ENDPOINT_ID"  # 请替换为您的端点ID
+# 尝试导入配置文件，如果不存在则提示用户创建
+config_path = Path("config.py")
+if config_path.exists():
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+else:
+    print("错误: config.py 文件不存在。请根据 config.example.py 创建配置文件。")
+    sys.exit(1)
+
+# 从配置文件读取配置
+API_KEY = config.API_KEY
+ENDPOINT_ID = config.ENDPOINT_ID
 API_URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/run"
 STATUS_URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/status/"
 
-# 指定输入文件路径
-audio_path = "assets/halfbody_demo/audio/chinese/good.wav"
-image_path = "assets/halfbody_demo/refimag/natural_bk_openhand/0035.png"
-output_path = "output_video.mp4"
+# 从配置文件读取路径
+audio_path = config.AUDIO_PATH
+image_path = config.IMAGE_PATH
+output_path = config.OUTPUT_PATH
 
 def encode_file(file_path):
     """将文件编码为base64字符串"""
@@ -41,10 +54,10 @@ def main():
         "input": {
             "reference_image": image_base64,
             "audio": audio_base64,
-            "prompt": "a person talking, natural expression",  # 可根据需要修改
-            "seed": 42,
-            "steps": 25,
-            "guidance_scale": 7.5
+            "prompt": config.DEFAULT_PROMPT,
+            "seed": config.DEFAULT_SEED,
+            "steps": config.DEFAULT_STEPS,
+            "guidance_scale": config.DEFAULT_GUIDANCE_SCALE
         }
     }
     

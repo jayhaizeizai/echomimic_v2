@@ -1,43 +1,48 @@
-# 核心依赖 - 优先安装
-runpod==1.4.1
-PyYAML>=6.0
-requests>=2.31
-filelock>=3.13
-
-# 主要依赖
+# 主要依赖 - 顺序按重要性排列
 transformers>=4.46.3
 diffusers==0.31.0
+
+# 基础工具库
+numpy==1.26.4
+scipy==1.14.1
+Pillow>=10.2.0,<10.3.0
+tqdm
+
+# 模型相关
 torchmetrics
 torchtyping
-tqdm
 einops==0.8.0
 omegaconf==2.3.0
+accelerate==1.1.1
+huggingface_hub==0.26.2
+
+# 多媒体处理
 opencv-python
 av==13.1.0
-accelerate==1.1.1
-clip @ https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip#sha256=b5842c25da441d6c581b53a5c60e0c2127ebafe0f746f8e15561a006c6c3be6a
-decord==0.6.0
-gradio==4.29.0
-gradio_client==1.4.3
 imageio==2.36.0
 imageio-ffmpeg==0.5.1
-numpy==1.26.4
-onnxruntime-gpu==1.20.1
-open-clip-torch==2.29.0
-opencv-contrib-python==4.10.0.84
-Pillow>=10.2.0,<10.3.0
-scikit-image==0.24.0
-scikit-learn==1.5.2
-scipy==1.14.1
-torchdiffeq==0.2.5
-torchsde==0.2.6
-mlflow==2.18.0
-controlnet-aux==0.0.9
 ffmpeg-python
 soundfile
 mediapipe
-IPython
 scenedetect
 moviepy==1.0.3
-huggingface_hub==0.26.2
+
+# 模型组件
+clip @ https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip#sha256=b5842c25da441d6c581b53a5c60e0c2127ebafe0f746f8e15561a006c6c3be6a
+decord==0.6.0
+open-clip-torch==2.29.0
+onnxruntime-gpu==1.20.1
+torchdiffeq==0.2.5
+torchsde==0.2.6
+controlnet-aux==0.0.9
+
+# 评估与显示
+scikit-image==0.24.0
+scikit-learn==1.5.2
+mlflow==2.18.0
+IPython
+
+# Web界面 (可选)
+gradio==4.29.0
+gradio_client==1.4.3
 

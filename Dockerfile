@@ -29,4 +29,4 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK CMD curl -sf http://localhost:3000/healthz || exit 1
 
 # ---------- 默认入口 ----------
-CMD ["python", "handler.py"]
+CMD ["bash", "-c", "echo '开始容器调试信息' && date && echo '系统信息:' && uname -a && echo '磁盘空间:' && df -h && echo '目录内容:' && ls -la && echo 'Python路径:' && python -c 'import sys; print(sys.path)' && echo '尝试导入runpod包:' && python -c 'import runpod; print(\"runpod版本:\", runpod.__version__)' && echo 'handler.py内容:' && cat handler.py | head -30 && echo '开始运行主程序' && python -u -v handler.py 2>&1 | tee /tmp/debug.log"]

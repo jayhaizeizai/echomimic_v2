@@ -12,7 +12,9 @@ RUN apt-get update && \
 
 # ---------- Python 依赖 ----------
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir runpod==1.4.1 && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip list | grep runpod
 
 # ---------- 复制源码 ----------
 COPY . .

@@ -4,6 +4,10 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 # 设置工作目录
 WORKDIR /app
 
+# 设置非交互式前端避免tzdata等包的安装提示
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
 # 先只复制必要的配置文件
 COPY requirements.txt /app/
 COPY configs/ /app/configs/

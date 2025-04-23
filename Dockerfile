@@ -1,24 +1,28 @@
 # ---------- 基础镜像 ----------
-    FROM python:3.10-slim
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
-    # ---------- 系统依赖 ----------
-    ENV DEBIAN_FRONTEND=noninteractive
-    RUN apt-get update && \
-        apt-get install -y --no-install-recommends \
-            git git-lfs ca-certificates wget && \
-        git lfs install && \
-        rm -rf /var/lib/apt/lists/*
-    
-    # ---------- 工作目录 ----------
-    WORKDIR /app
-    
-    # 如有 requirements.txt，请取消下面两行的注释
-    COPY requirements.txt .
-    RUN pip install --no-cache-dir -r requirements.txt
-    
-    # ---------- 复制源代码 ----------
-    COPY . .
-    
-    # ---------- 默认入口 ----------
-    CMD ["python", "handler.py"]
+# ---------- 系统依赖 ----------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git git-lfs \
+        ffmpeg libsm6 libxext6 libglib2.0-0 \
+        curl ca-certificates && \
+    git lfs install && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- Python 依赖 ----------
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---------- 复制源码 ----------
+COPY . .
+
+# ---------- 运行环境 ----------
+ENV PYTHONUNBUFFERED=1
+
+# ---------- 健康探针（可选） ----------
+HEALTHCHECK CMD curl -sf http://localhost:3000/healthz || exit 1
+
+# ---------- 默认入口 ----------
+CMD ["python", "handler.py"]
     

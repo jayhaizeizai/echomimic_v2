@@ -45,3 +45,14 @@ IPython
 # Web界面 (可选)
 gradio_client==1.4.3
 
+# RunPod服务器依赖
+runpod==1.4.1
+
+# 核心AI框架 - 虽然基础镜像已有，但明确版本避免冲突
+torch>=2.0.0,<2.3.0
+
+# 有些handler.py使用的包可能通过其他包自动安装，但明确声明更安全
+pyyaml
+requests
+filelock
+

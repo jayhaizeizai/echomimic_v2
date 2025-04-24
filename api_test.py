@@ -39,25 +39,17 @@ def main():
         print(f"错误: 音频文件不存在 - {audio_path}")
         return
     
-    if not os.path.exists(image_path):
-        print(f"错误: 图像文件不存在 - {image_path}")
-        return
-    
     print(f"正在读取音频文件: {audio_path}")
     audio_base64 = encode_file(audio_path)
     
-    print(f"正在读取参考图像: {image_path}")
-    image_base64 = encode_file(image_path)
-    
-    # 构建请求数据
+    # 构建请求数据 - 使用handler.py支持的参数格式
     payload = {
         "input": {
-            "reference_image": image_base64,
             "audio": audio_base64,
-            "prompt": config.DEFAULT_PROMPT,
-            "seed": config.DEFAULT_SEED,
+            # 可选参数，与handler_config.yaml中的default_params对应
             "steps": config.DEFAULT_STEPS,
-            "guidance_scale": config.DEFAULT_GUIDANCE_SCALE
+            "guidance_scale": config.DEFAULT_GUIDANCE_SCALE,
+            "seed": config.DEFAULT_SEED,
         }
     }
     

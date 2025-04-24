@@ -1,3 +1,63 @@
+# EchoMimicV2 - 音频驱动的人体动画生成
+
+EchoMimicV2是一款基于AI的工具，能够将音频输入转换为逼真的人体动画视频。该工具使用RunPod进行云端GPU加速处理。
+
+## 快速开始
+
+1. 复制`config.example.py`文件为`config.py`并填写您的RunPod API密钥和端点ID
+2. 确保音频文件路径正确
+3. 运行`python api_test.py`生成视频
+
+## 配置说明
+
+在`config.py`中，您可以设置以下参数：
+
+### 必要配置
+
+- `API_KEY`: RunPod API密钥
+- `ENDPOINT_ID`: RunPod端点ID
+- `AUDIO_PATH`: 输入音频文件路径
+- `OUTPUT_PATH`: 输出视频保存路径
+
+### 可选参数
+
+- `POSE_PATH`: 姿势数据路径（目录或ZIP文件）
+- `DEFAULT_WIDTH`/`DEFAULT_HEIGHT`: 视频分辨率
+- `DEFAULT_FPS`: 视频帧率
+- `DEFAULT_STEPS`: 去噪步数
+- `DEFAULT_GUIDANCE_SCALE`: 生成引导比例
+- `DEFAULT_SEED`: 随机种子
+- `DEFAULT_LENGTH`: 视频长度（帧数）
+- `DEFAULT_CONTEXT_FRAMES`: 上下文帧数
+- `DEFAULT_CONTEXT_OVERLAP`: 上下文重叠帧数
+- `DEFAULT_SAMPLE_RATE`: 音频采样率
+- `DEFAULT_START_IDX`: 起始帧索引
+
+## 使用姿势数据
+
+您可以提供参考姿势数据来引导生成过程：
+
+1. 使用姿势数据目录：将`POSE_PATH`设置为包含序列化姿势数据的目录路径
+2. 使用ZIP文件：将`POSE_PATH`设置为压缩的姿势数据文件路径
+
+## 配置验证
+
+运行`python check_configs.py`检查并创建必要的配置文件。
+
+## 示例
+
+```python
+# 基本用法
+python api_test.py
+
+# 查看生成的视频
+# 视频将保存到config.py中的OUTPUT_PATH位置
+```
+
+## 技术支持
+
+如有问题，请查阅配置文件以及handler.py中的注释。
+
 <h1 align='center'>EchoMimicV2: Towards Striking, Simplified, and Semi-Body Human Animation</h1>
 
 <div align='center'>

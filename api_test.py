@@ -6,6 +6,7 @@ import os
 import importlib.util
 import sys
 from pathlib import Path
+import binascii  # 新增导入
 
 # 尝试导入配置文件，如果不存在则提示用户创建
 config_path = Path("config.py")
@@ -25,8 +26,8 @@ STATUS_URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/status/"
 
 # 从配置文件读取路径
 audio_path = config.AUDIO_PATH
-image_path = config.IMAGE_PATH
 output_path = config.OUTPUT_PATH
+pose_path = getattr(config, 'POSE_PATH', '')
 
 def encode_file(file_path):
     """将文件编码为base64字符串"""
@@ -34,7 +35,7 @@ def encode_file(file_path):
         return base64.b64encode(f.read()).decode()
 
 def main():
-    # 检查文件是否存在
+    # 检查音频文件是否存在
     if not os.path.exists(audio_path):
         print(f"错误: 音频文件不存在 - {audio_path}")
         return
@@ -42,15 +43,37 @@ def main():
     print(f"正在读取音频文件: {audio_path}")
     audio_base64 = encode_file(audio_path)
     
-    # 构建请求数据 - 使用handler.py支持的参数格式
+    # 构建基本请求数据
+    input_data = {
+        "audio": audio_base64,
+        "width": getattr(config, 'DEFAULT_WIDTH', 768),
+        "height": getattr(config, 'DEFAULT_HEIGHT', 768),
+        "steps": getattr(config, 'DEFAULT_STEPS', 6),
+        "guidance_scale": getattr(config, 'DEFAULT_GUIDANCE_SCALE', 1.0),
+        "fps": getattr(config, 'DEFAULT_FPS', 24),
+        "seed": getattr(config, 'DEFAULT_SEED', 420),
+        "length": getattr(config, 'DEFAULT_LENGTH', 240),
+        "context_frames": getattr(config, 'DEFAULT_CONTEXT_FRAMES', 12),
+        "context_overlap": getattr(config, 'DEFAULT_CONTEXT_OVERLAP', 3),
+        "sample_rate": getattr(config, 'DEFAULT_SAMPLE_RATE', 16000),
+        "start_idx": getattr(config, 'DEFAULT_START_IDX', 0)
+    }
+    
+    # 处理姿势数据（如果提供）
+    if pose_path and os.path.exists(pose_path):
+        print(f"正在处理姿势数据: {pose_path}")
+        if os.path.isdir(pose_path):
+            # 如果是目录，通知用户我们将使用目录
+            print(f"将使用姿势数据目录: {pose_path}")
+            input_data["pose"] = pose_path
+        else:
+            # 如果是文件（假设是zip），编码为base64
+            print(f"将姿势数据文件进行base64编码: {pose_path}")
+            input_data["pose"] = encode_file(pose_path)
+            print("姿势数据编码完成")
+    
     payload = {
-        "input": {
-            "audio": audio_base64,
-            # 可选参数，与handler_config.yaml中的default_params对应
-            "steps": config.DEFAULT_STEPS,
-            "guidance_scale": config.DEFAULT_GUIDANCE_SCALE,
-            "seed": config.DEFAULT_SEED,
-        }
+        "input": input_data
     }
     
     # 发送请求
@@ -72,7 +95,7 @@ def main():
             process_async_job(job_id, headers)
         else:
             # 同步作业，直接处理结果
-            process_result(data.get("output", {}))
+            process_result(data)
             
     except requests.exceptions.RequestException as e:
         print(f"API请求错误: {e}")
@@ -97,7 +120,7 @@ def process_async_job(job_id, headers):
             
             if status == "COMPLETED":
                 print("作业已完成!")
-                process_result(status_data.get("output", {}))
+                process_result(status_data)
                 break
             elif status == "FAILED":
                 print(f"作业失败: {status_data.get('error', '未知错误')}")
@@ -114,32 +137,59 @@ def process_async_job(job_id, headers):
             print(f"轮询状态时发生错误: {e}")
             time.sleep(10)  # 出错后继续尝试
 
-def process_result(output):
+def process_result(data):
     """处理API返回的结果"""
-    if not output:
-        print("未收到有效输出")
-        return
-    
-    if "error" in output:
-        print(f"处理错误: {output['error']}")
-        return
-    
-    if "video" in output:
-        # 保存视频文件
-        try:
-            video_base64 = output["video"]
-            video_data = base64.b64decode(video_base64)
+    try:
+        # 保存原始响应
+        with open("raw_response.json", "w") as f:
+            json.dump(data, f, indent=2)
+        
+        # 提取有效数据（兼容handler的直接返回和RunPod包装）
+        response_data = data.get("output", data) if isinstance(data, dict) else data
+        
+        if isinstance(response_data, dict) and "video" in response_data:
+            video_base64 = response_data["video"]
             
-            with open(output_path, "wb") as f:
-                f.write(video_data)
+            if isinstance(video_base64, str):
+                # 处理数据URI前缀
+                if video_base64.startswith('data:'):
+                    video_base64 = video_base64.split(',', 1)[1]
+                
+                # Base64完整性检查
+                padding = len(video_base64) % 4
+                if padding:
+                    video_base64 += '=' * (4 - padding)
+                
+                # 解码验证
+                try:
+                    video_data = base64.b64decode(video_base64)
+                    if len(video_data) < 1024:
+                        raise ValueError("视频数据小于1KB，可能无效")
+                        
+                    # 确保输出目录存在
+                    output_dir = Path(output_path).parent
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # 保存文件
+                    with open(output_path, "wb") as f:
+                        f.write(video_data)
+                    print(f"视频成功保存到: {output_path}")
+                    
+                except binascii.Error as e:
+                    print(f"Base64解码错误: {e}")
+                    with open("invalid_base64.txt", "w") as f:
+                        f.write(video_base64[:1000])
+                        
+            else:
+                print(f"错误: video字段类型应为字符串，实际为{type(video_base64)}")
+        else:
+            print("错误: 响应中未找到有效的video字段")
+            print(f"可用字段: {list(response_data.keys()) if isinstance(response_data, dict) else '非字典响应'}")
             
-            print(f"视频已成功生成并保存至: {output_path}")
-            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-            print(f"视频大小: {file_size_mb:.2f} MB")
-        except Exception as e:
-            print(f"保存视频时发生错误: {e}")
-    else:
-        print(f"未找到视频数据在输出中: {output}")
+    except Exception as e:
+        print(f"处理响应时出错: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

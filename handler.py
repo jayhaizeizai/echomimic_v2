@@ -284,11 +284,37 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
         start_idx=start,
     ).videos
 
-    out_mp4 = tmp / "result.mp4"
-    save_videos_grid(videos, str(out_mp4), n_rows=1, fps=fps)
-    encoded = base64.b64encode(out_mp4.read_bytes()).decode()
-    shutil.rmtree(tmp, ignore_errors=True)
-    return {"video": encoded}
+    # 创建工作区临时目录
+    workspace_dir = Path("/workspace/tmp_videos")
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 生成唯一文件名
+    timestamp = int(time.time() * 1000)  # 毫秒级时间戳
+    random_suffix = os.urandom(4).hex()  # 8字符随机后缀
+    out_mp4 = workspace_dir / f"vid_{timestamp}_{random_suffix}.mp4"
+    
+    try:
+        # 保存视频文件
+        save_videos_grid(videos, str(out_mp4), n_rows=1, fps=fps)
+        
+        # 验证文件大小
+        if out_mp4.stat().st_size < 1024:  # 小于1KB视为无效
+            raise ValueError("生成的视频文件过小，可能生成失败")
+            
+        # 读取并编码
+        with open(out_mp4, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+        
+        return {"video": encoded}
+        
+    finally:
+        # 确保清理临时文件
+        try:
+            if out_mp4.exists():
+                out_mp4.unlink()
+                log.info(f"已清理临时文件: {out_mp4}")
+        except Exception as e:
+            log.warning(f"清理临时文件失败: {e}")
 
 # ---------------------------------------------------------------------
 # RunPod Handler

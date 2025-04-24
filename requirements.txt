@@ -3,7 +3,7 @@ transformers>=4.46.3
 diffusers==0.31.0
 
 # 基础工具库
-numpy==1.26.4
+numpy==1.24.4
 scipy==1.14.1
 Pillow>=10.2.0,<10.3.0
 tqdm
@@ -43,6 +43,5 @@ mlflow==2.18.0
 IPython
 
 # Web界面 (可选)
-gradio==4.29.0
 gradio_client==1.4.3
 

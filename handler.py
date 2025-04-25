@@ -2,18 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 RunPod GPU-serverless handler  ·  EchoMimicV2
---------------------------------------------
+------------------------------------------------
 冷启动：
     • 探测网络卷 → 校验可写 & 空间
     • 下载 / 缓存模型到卷
     • 构建 EchoMimicV2 Pipeline
 请求：
     • 解析 payload ➜ _infer ➜ 返回 Base64-MP4
+
+2025-04-25  简化内容
+    • 假设 audio 字段始终为 Base-64 WAV；若解码失败则直接报错
+    • _decode_base64_audio() 取代之前的 _resolve_media() 路径检测
+    • pose 保持兼容：仍可接受目录、zip 或 Base-64
 """
 
 from __future__ import annotations
 
 import base64
+import errno
 import logging
 import os
 import shutil
@@ -97,16 +103,16 @@ def _download_models() -> None:
     log.info("📥 Downloading models → %s", WEIGHTS_ROOT)
     audio_dir = WEIGHTS_ROOT / "audio_processor"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 1) Clone EchoMimicV2 到子目录
     repo_dir = WEIGHTS_ROOT / "EchoMimicV2"
     try:
         _git_clone_lfs("https://huggingface.co/BadToBest/EchoMimicV2", repo_dir)
-        log.info("✅ EchoMimicV2仓库克隆成功: %s", repo_dir)
+        log.info("✅ EchoMimicV2 仓库克隆成功: %s", repo_dir)
     except Exception as e:
-        log.error("❌ EchoMimicV2仓库克隆失败: %s", e)
+        log.error("❌ EchoMimicV2 仓库克隆失败: %s", e)
         raise
-    
+
     # VAE
     _git_clone_lfs("https://huggingface.co/stabilityai/sd-vae-ft-mse", WEIGHTS_ROOT / "sd-vae-ft-mse")
     # 图像变体
@@ -143,26 +149,24 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
     for key in (
         "pretrained_vae_path", "pretrained_base_model_path",
         "denoising_unet_path", "reference_unet_path",
-        "pose_encoder_path", "motion_module_path", "audio_model_path"
+        "pose_encoder_path", "motion_module_path", "audio_model_path",
     ):
         cfg[key] = _abs(cfg[key])
     inf_cfg = OmegaConf.load(_abs(cfg.inference_config))
 
     vae = AutoencoderKL.from_pretrained(cfg.pretrained_vae_path).to(device, dtype=dtype)
     try:
-        # 首先尝试加载safetensors格式
         ref_unet = UNet2DConditionModel.from_pretrained(
-            cfg.pretrained_base_model_path, 
+            cfg.pretrained_base_model_path,
             subfolder="unet",
-            use_safetensors=True
+            use_safetensors=True,
         ).to(device, dtype=dtype)
-    except Exception as e:
-        # 如果失败，尝试加载bin格式
+    except Exception:
         ref_unet = UNet2DConditionModel.from_pretrained(
-            cfg.pretrained_base_model_path, 
+            cfg.pretrained_base_model_path,
             subfolder="unet",
             use_safetensors=False,
-            weight_name="diffusion_pytorch_model.bin"
+            weight_name="diffusion_pytorch_model.bin",
         ).to(device, dtype=dtype)
     ref_unet.load_state_dict(torch.load(cfg.reference_unet_path, map_location="cpu"))
 
@@ -185,7 +189,7 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
             },
         ).to(device, dtype=dtype)
     denoise_unet.load_state_dict(
-        torch.load(cfg.denoising_unet_path, map_location="cpu"), strict=False
+        torch.load(cfg.denoising_unet_path, map_location="cpu"), strict=False,
     )
 
     pose_enc = PoseEncoder(320, conditioning_channels=3, block_out_channels=(16, 32, 96, 256))
@@ -206,6 +210,48 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
     return pipe
 
 # ---------------------------------------------------------------------
+# 工具函数
+# ---------------------------------------------------------------------
+
+def _looks_like_local_file(p: str) -> bool:
+    """粗略判断字符串是否可能是本地文件路径。避免把 Base64 长串当作路径。"""
+    if not isinstance(p, str):
+        return False
+    if len(p) > 255:
+        return False
+    if p.startswith(("data:", "http://", "https://")):
+        return False
+    return any(ch in p for ch in ("/", "\\", "."))
+
+
+def _save_b64_to_tmp(tmp: Path, b64: str, ext: str) -> Path:
+    """将 Base-64 数据保存为临时文件，返回路径。"""
+    fpath = tmp / f"blob{ext}"
+    data = b64.split(",", 1)[-1]
+    fpath.write_bytes(base64.b64decode(data))
+    return fpath
+
+
+def _save_b64(b64: str, ext: str) -> Path:
+    import tempfile, uuid
+    # 使用 tempfile 生成临时目录，避免路径过长
+    tmp_dir = Path(tempfile.mkdtemp(prefix="runpod_"))
+    # 生成简短随机文件名
+    filename = f"media_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}{ext}"
+    fpath = tmp_dir / filename
+    try:
+        data = b64.split(",", 1)[-1]
+        fpath.write_bytes(base64.b64decode(data))
+    except Exception as e:
+        raise ValueError("解码 Base-64 失败，请确认 audio 字段是否为正确的 Base64-WAV") from e
+    return fpath
+
+
+def _decode_base64_audio(raw: str) -> Path:
+    """始终将 raw 当作 Base-64 WAV，如果无法解码则抛 ValueError"""
+    return _save_b64(raw, ".wav")
+
+# ---------------------------------------------------------------------
 # 推理核心
 # ---------------------------------------------------------------------
 
@@ -221,10 +267,13 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not refimg.exists():
         raise FileNotFoundError(f"参考图像不存在: {refimg}")
 
-    audio_input = payload.get("audio")
-    if not audio_input:
+    # 假设 API 传入的 audio 字段始终为 Base-64 编码的 WAV，直接解码
+    raw_audio = payload.get("audio")
+    if not raw_audio:
         raise ValueError("缺少参数: audio")
+    audio_path = _decode_base64_audio(raw_audio)
 
+    # 其它参数
     W = int(payload.get("width", payload.get("W", defaults.width)))
     H = int(payload.get("height", payload.get("H", defaults.height)))
     steps = int(payload.get("steps", defaults.steps))
@@ -241,20 +290,16 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     tmp = Path("/tmp/runpod") / str(time.time_ns())
     tmp.mkdir(parents=True, exist_ok=True)
 
-    def _save_b64(b64: str, ext: str) -> Path:
-        fpath = tmp / f"blob{ext}"
-        data = b64.split(",", 1)[-1]
-        fpath.write_bytes(base64.b64decode(data))
-        return fpath
-
-    audio_path = Path(audio_input) if Path(audio_input).exists() else _save_b64(audio_input, ".wav")
+    # -----------------------------
+    # 处理 pose (目录 or Base-64 ZIP)
+    # -----------------------------
     pose_tensor: Optional[torch.Tensor] = None
-    if payload.get("pose"):
-        pose_field = payload["pose"]
-        if Path(str(pose_field)).is_dir():
+    pose_field = payload.get("pose")
+    if pose_field:
+        if _looks_like_local_file(str(pose_field)) and Path(str(pose_field)).is_dir():
             pose_dir = Path(pose_field)
         else:
-            pose_zip = _save_b64(pose_field, ".zip")
+            pose_zip = _save_b64_to_tmp(tmp, str(pose_field), ".zip")
             shutil.unpack_archive(pose_zip, tmp / "pose")
             pose_dir = tmp / "pose"
         dtype = next(_PIPELINE.parameters()).dtype
@@ -270,6 +315,9 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
             frames.append(torch.tensor(canvas, dtype=dtype, device=device).permute(2, 0, 1) / 255.0)
         pose_tensor = torch.stack(frames, dim=1).unsqueeze(0)
 
+    # -----------------------------
+    # 生成视频
+    # -----------------------------
     videos = _PIPELINE(
         refimg,
         str(audio_path),
@@ -284,31 +332,21 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
         start_idx=start,
     ).videos
 
-    # 创建工作区临时目录
     workspace_dir = Path("/workspace/tmp_videos")
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 生成唯一文件名
-    timestamp = int(time.time() * 1000)  # 毫秒级时间戳
-    random_suffix = os.urandom(4).hex()  # 8字符随机后缀
+
+    timestamp = int(time.time() * 1000)
+    random_suffix = os.urandom(4).hex()
     out_mp4 = workspace_dir / f"vid_{timestamp}_{random_suffix}.mp4"
-    
+
     try:
-        # 保存视频文件
         save_videos_grid(videos, str(out_mp4), n_rows=1, fps=fps)
-        
-        # 验证文件大小
-        if out_mp4.stat().st_size < 1024:  # 小于1KB视为无效
+        if out_mp4.stat().st_size < 1024:
             raise ValueError("生成的视频文件过小，可能生成失败")
-            
-        # 读取并编码
         with open(out_mp4, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
-        
         return {"video": encoded}
-        
     finally:
-        # 确保清理临时文件
         try:
             if out_mp4.exists():
                 out_mp4.unlink()
@@ -333,7 +371,6 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     log.info("Bootstrapping RunPod server (volume=%s)", VOLUME_ROOT)
-    # 强制在启动时执行冷启动
     log.info("执行预启动模型加载")
     _download_models()
     _PIPELINE = _build_pipeline()

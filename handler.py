@@ -295,25 +295,99 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     # -----------------------------
     pose_tensor: Optional[torch.Tensor] = None
     pose_field = payload.get("pose")
+    dtype = next(_PIPELINE.parameters()).dtype
+    device = next(_PIPELINE.parameters()).device
+
+    # 1. 处理姿势数据
     if pose_field:
+        # 用户提供的姿势处理
         if _looks_like_local_file(str(pose_field)) and Path(str(pose_field)).is_dir():
             pose_dir = Path(pose_field)
         else:
             pose_zip = _save_b64_to_tmp(tmp, str(pose_field), ".zip")
             shutil.unpack_archive(pose_zip, tmp / "pose")
             pose_dir = tmp / "pose"
-        dtype = next(_PIPELINE.parameters()).dtype
-        device = next(_PIPELINE.parameters()).device
+
+        # 处理用户提供的姿势
         frames = []
         for idx in range(start, start + length):
-            npy_data = np.load(pose_dir / f"{idx}.npy", allow_pickle=True).tolist()
-            imh_new, imw_new, rb, re, cb, ce = npy_data["draw_pose_params"]
-            canvas = np.zeros((W, H, 3), dtype="uint8")
-            img_pose = draw_pose_select_v2(npy_data, imh_new, imw_new, ref_w=800)
-            img_pose = np.transpose(np.array(img_pose), (1, 2, 0))
-            canvas[rb:re, cb:ce, :] = img_pose
-            frames.append(torch.tensor(canvas, dtype=dtype, device=device).permute(2, 0, 1) / 255.0)
-        pose_tensor = torch.stack(frames, dim=1).unsqueeze(0)
+            pose_file = pose_dir / f"{idx}.npy"
+            if not pose_file.exists():
+                log.warning(f"姿势文件不存在: {pose_file}")
+                continue
+            
+            try:
+                npy_data = np.load(pose_file, allow_pickle=True).tolist()
+                if not isinstance(npy_data, dict) or "draw_pose_params" not in npy_data:
+                    log.warning(f"姿势文件格式错误: {pose_file}")
+                    continue
+                
+                imh_new, imw_new, rb, re, cb, ce = npy_data["draw_pose_params"]
+                canvas = np.zeros((W, H, 3), dtype="uint8")
+                img_pose = draw_pose_select_v2(npy_data, imh_new, imw_new, ref_w=800)
+                img_pose = np.transpose(np.array(img_pose), (1, 2, 0))
+                canvas[rb:re, cb:ce, :] = img_pose
+                frames.append(torch.tensor(canvas, dtype=dtype, device=device).permute(2, 0, 1) / 255.0)
+            except Exception as e:
+                log.warning(f"处理姿势文件出错: {pose_file}, 错误: {e}")
+                continue
+    else:
+        # 2. 未提供姿势，使用默认姿势
+        log.info("未提供姿势数据，使用默认姿势 (assets/halfbody_demo/pose/good)")
+        pose_dir = Path("assets/halfbody_demo/pose/good")
+        
+        if pose_dir.exists():
+            # 确保不超过默认姿势文件数量
+            avail_poses = sorted([int(p.stem) for p in pose_dir.glob("*.npy") if p.stem.isdigit()])
+            if not avail_poses:
+                log.warning("默认姿势目录没有有效姿势文件")
+                frames = []
+            else:
+                max_idx = max(avail_poses)
+                adjusted_length = min(length, len(avail_poses))
+                log.info(f"使用默认姿势，长度调整为: {adjusted_length}")
+                
+                # 处理默认姿势文件
+                frames = []
+                for i in range(adjusted_length):
+                    file_idx = start + i
+                    if file_idx > max_idx:
+                        file_idx = file_idx % (max_idx + 1)  # 循环使用姿势
+                    
+                    pose_file = pose_dir / f"{file_idx}.npy"
+                    if not pose_file.exists():
+                        continue
+                    
+                    try:
+                        npy_data = np.load(pose_file, allow_pickle=True).tolist()
+                        imh_new, imw_new, rb, re, cb, ce = npy_data["draw_pose_params"]
+                        canvas = np.zeros((W, H, 3), dtype="uint8")
+                        img_pose = draw_pose_select_v2(npy_data, imh_new, imw_new, ref_w=800)
+                        img_pose = np.transpose(np.array(img_pose), (1, 2, 0))
+                        canvas[rb:re, cb:ce, :] = img_pose
+                        frames.append(torch.tensor(canvas, dtype=dtype, device=device).permute(2, 0, 1) / 255.0)
+                    except Exception as e:
+                        log.warning(f"处理默认姿势文件出错: {pose_file}, 错误: {e}")
+                        continue
+        else:
+            log.warning(f"默认姿势目录不存在: {pose_dir}")
+            frames = []
+
+    # 3. 如果没有任何有效姿势帧，创建空白姿势
+    if not frames:
+        log.info("没有有效姿势数据，使用空白姿势")
+        empty_frame = torch.zeros((3, W, H), dtype=dtype, device=device)
+        frames = [empty_frame for _ in range(length)]
+
+    # 确保帧数量与要求匹配
+    if len(frames) < length:
+        last_frame = frames[-1] if frames else torch.zeros((3, W, H), dtype=dtype, device=device)
+        frames.extend([last_frame] * (length - len(frames)))
+    elif len(frames) > length:
+        frames = frames[:length]
+
+    pose_tensor = torch.stack(frames, dim=1).unsqueeze(0)
+    log.info(f"最终姿势张量形状: {pose_tensor.shape}")
 
     # -----------------------------
     # 生成视频
@@ -321,7 +395,7 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     videos = _PIPELINE(
         refimg,
         str(audio_path),
-        pose_tensor,
+        pose_tensor,  # 现在pose_tensor一定不为None
         W, H, length,
         steps, cfg_scale,
         generator=torch.manual_seed(seed),

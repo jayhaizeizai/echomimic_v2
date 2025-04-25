@@ -15,13 +15,13 @@ weight_dtype: 'fp16'
 
 # 默认参数设置
 default_params:
-  width: 768
-  height: 768
-  steps: 6
+  width: 512
+  height: 512
+  steps: 4
   guidance_scale: 1.0
   fps: 24
   seed: 420
-  length: 240
+  length: 100
   context_frames: 12
   context_overlap: 3
   sample_rate: 16000 

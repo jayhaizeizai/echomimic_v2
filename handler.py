@@ -35,6 +35,7 @@ import runpod
 import torch
 from diffusers import AutoencoderKL, DDIMScheduler
 from omegaconf import OmegaConf
+from PIL import Image
 
 # EchoMimicV2 相关
 from src.models.unet_2d_condition import UNet2DConditionModel
@@ -267,6 +268,9 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not refimg.exists():
         raise FileNotFoundError(f"参考图像不存在: {refimg}")
 
+    # 转换为PIL图像对象
+    ref_img_pil = Image.open(refimg).convert("RGB")
+
     # 假设 API 传入的 audio 字段始终为 Base-64 编码的 WAV，直接解码
     raw_audio = payload.get("audio")
     if not raw_audio:
@@ -295,9 +299,11 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     # -----------------------------
     pose_tensor: Optional[torch.Tensor] = None
     pose_field = payload.get("pose")
-    dtype = next(_PIPELINE.parameters()).dtype
-    device = next(_PIPELINE.parameters()).device
-
+    
+    # 从Pipeline的组件获取dtype和device，而不是Pipeline本身
+    dtype = _PIPELINE.vae.dtype
+    device = _PIPELINE.vae.device
+    
     # 1. 处理姿势数据
     if pose_field:
         # 用户提供的姿势处理
@@ -393,7 +399,7 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     # 生成视频
     # -----------------------------
     videos = _PIPELINE(
-        refimg,
+        ref_img_pil,
         str(audio_path),
         pose_tensor,  # 现在pose_tensor一定不为None
         W, H, length,

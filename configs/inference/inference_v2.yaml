@@ -1,3 +1,5 @@
+# -------------  inference_v2.yaml  (Accelerated • LCM)  -------------
+
 unet_additional_kwargs:
   use_inflated_groupnorm: true
   unet_use_cross_frame_attention: false 
@@ -33,4 +35,4 @@ noise_scheduler_kwargs:
   rescale_betas_zero_snr: True
   timestep_spacing: "trailing"
 
-sampler: DDIM 
+sampler: LCM

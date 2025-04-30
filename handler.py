@@ -33,7 +33,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import runpod
 import torch
-from diffusers import AutoencoderKL, DDIMScheduler
+from diffusers import AutoencoderKL, DDIMScheduler, LCMScheduler
 from omegaconf import OmegaConf
 from PIL import Image
 
@@ -198,7 +198,13 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
     pose_enc.to(device, dtype=dtype)
 
     audio_model = load_audio_model(cfg.audio_model_path, device=device)
-    scheduler = DDIMScheduler(**OmegaConf.to_container(inf_cfg.noise_scheduler_kwargs))
+    sampler_name = getattr(inf_cfg, "sampler", "ddim").lower()
+    if sampler_name == "lcm":
+        log.info("Using LCMScheduler (≤8 step)")
+        scheduler = LCMScheduler(**sched_kwargs)
+    else:
+        scheduler = DDIMScheduler(**sched_kwargs)
+
 
     pipe = EchoMimicV2Pipeline(
         vae=vae,
@@ -208,6 +214,12 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
         pose_encoder=pose_enc,
         scheduler=scheduler,
     ).to(device, dtype=dtype)
+    
+    pipe.enable_xformers_memory_efficient_attention()   # xFormers
+    if hasattr(torch, "compile"):                       # Torch 2+ compile
+        pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")
+    torch.backends.cuda.matmul.allow_tf32 = True        # TF32
+    torch.backends.cudnn.allow_tf32  = True
     return pipe
 
 # ---------------------------------------------------------------------

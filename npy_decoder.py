@@ -4,7 +4,7 @@ import glob
 
 # 定义输入输出路径
 input_dir = "assets/halfbody_demo/pose/01/"
-output_dir = "tmp/pose/01_192_192"
+output_dir = "tmp/pose/01_512_512"
 
 # 确保输出目录存在
 os.makedirs(output_dir, exist_ok=True)
@@ -28,7 +28,7 @@ for input_path in npy_files:
     
     # 修改分辨率为192x192
     if "draw_pose_params" in data:
-        data["draw_pose_params"] = [192, 192, 0, 192, 0, 192]
+        data["draw_pose_params"] = [512, 512, 0, 512, 0, 512]
     
     # 保存为NPY格式
     np.save(npy_output_path, data, allow_pickle=True)

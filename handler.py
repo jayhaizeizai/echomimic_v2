@@ -216,12 +216,7 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
         pose_encoder=pose_enc,
         scheduler=scheduler,
     ).to(device, dtype=dtype)
-
-    pipe.enable_xformers_memory_efficient_attention()   # xFormers
-    if hasattr(torch, "compile"):                       # Torch 2+ compile
-        pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")
-    torch.backends.cuda.matmul.allow_tf32 = True        # TF32
-    torch.backends.cudnn.allow_tf32  = True
+    
     return pipe
 
 # ---------------------------------------------------------------------

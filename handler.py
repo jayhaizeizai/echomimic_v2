@@ -197,6 +197,8 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
     pose_enc.load_state_dict(torch.load(cfg.pose_encoder_path, map_location="cpu"))
     pose_enc.to(device, dtype=dtype)
 
+    sched_kwargs = OmegaConf.to_container(inf_cfg.noise_scheduler_kwargs)
+
     audio_model = load_audio_model(cfg.audio_model_path, device=device)
     sampler_name = getattr(inf_cfg, "sampler", "ddim").lower()
     if sampler_name == "lcm":
@@ -214,7 +216,7 @@ def _build_pipeline() -> EchoMimicV2Pipeline:
         pose_encoder=pose_enc,
         scheduler=scheduler,
     ).to(device, dtype=dtype)
-    
+
     pipe.enable_xformers_memory_efficient_attention()   # xFormers
     if hasattr(torch, "compile"):                       # Torch 2+ compile
         pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")

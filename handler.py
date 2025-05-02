@@ -348,8 +348,8 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
                 continue
     else:
         # 2. 未提供姿势，使用默认姿势
-        log.info("未提供姿势数据，使用默认姿势 (assets/halfbody_demo/pose/good)")
-        pose_dir = Path("assets/halfbody_demo/pose/good")
+        log.info("未提供姿势数据，使用默认姿势 (assets/halfbody_demo/pose/01)")
+        pose_dir = Path("assets/halfbody_demo/pose/01")
         
         if pose_dir.exists():
             # 确保不超过默认姿势文件数量

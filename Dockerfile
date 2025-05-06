@@ -13,10 +13,6 @@ RUN apt-get update && \
         vulkan-tools     \
         mesa-vulkan-drivers \
         libgl1-mesa-dev  \
-        # NCNN可能需要的额外依赖
-        libgomp1         \
-        libnccl2         \
-        libopenblas-dev  \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------

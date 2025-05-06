@@ -8,6 +8,15 @@ RUN apt-get update && \
         ffmpeg           \
         wget             \
         ca-certificates  \
+        # 添加Vulkan相关库和依赖
+        libvulkan1       \
+        vulkan-utils     \
+        mesa-vulkan-drivers \
+        libgl1-mesa-dev  \
+        # NCNN可能需要的额外依赖
+        libgomp1         \
+        libnccl2         \
+        libopenblas-dev  \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------
@@ -34,6 +43,9 @@ RUN conda install pip -n base
 # 2) 用 pip 安装 requirements.txt (添加兼容性处理)
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/conda/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ---------- 设置RIFE权限 ----------
+RUN chmod +x /workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan
 
 # ---------- 默认入口 ----------
 CMD ["python", "-u", "handler.py"]

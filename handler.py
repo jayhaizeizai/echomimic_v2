@@ -563,6 +563,34 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
         log.debug("Traceback:\n%s", traceback.format_exc())
         return {"success": False, "error": str(e)}
 
+def _ensure_vulkan_installed():
+    """确保Vulkan库已安装"""
+    try:
+        # 尝试导入vulkan库
+        subprocess.run(["ldconfig", "-p"], stdout=subprocess.PIPE, text=True, check=True)
+        vulkan_check = subprocess.run(
+            ["ldconfig", "-p", "|", "grep", "libvulkan"], 
+            shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        
+        if vulkan_check.returncode != 0:
+            log.info("正在安装Vulkan库...")
+            subprocess.run(
+                ["apt-get", "update", "-y"], 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                check=True
+            )
+            subprocess.run(
+                ["apt-get", "install", "-y", "libvulkan1"], 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                check=True
+            )
+            log.info("Vulkan库安装完成")
+    except Exception as e:
+        log.warning(f"Vulkan库安装失败: {e}")
+
 if __name__ == "__main__":
     log.info("Bootstrapping RunPod server (volume=%s)", VOLUME_ROOT)
     log.info("执行预启动模型加载")

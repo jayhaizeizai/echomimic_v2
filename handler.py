@@ -29,6 +29,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
+from fractions import Fraction
 
 import numpy as np
 import runpod
@@ -261,91 +262,98 @@ def _decode_base64_audio(raw: str) -> Path:
     """始终将 raw 当作 Base-64 WAV，如果无法解码则抛 ValueError"""
     return _save_b64(raw, ".wav")
 
-# ---------------------------------------------------------------------
-# 推理核心
-# ---------------------------------------------------------------------
 
-def _enhance_video_frames(input_video: Path, output_video: Path, rife_path: Optional[Path] = None, target_fps: Optional[int] = None) -> None:
-    """使用RIFE进行视频插帧增强
-    
+
+def _enhance_video_frames(
+    input_video: Path,
+    output_video: Path,
+    rife_path: Optional[Path] = None,
+    target_fps: Optional[int] = None
+) -> None:
+    """使用 RIFE 对视频做 2×/4× 等整数倍插帧
+
     Args:
-        input_video: 输入视频路径
-        output_video: 输出视频路径
-        rife_path: RIFE可执行文件路径，如果为None则使用默认路径
-        target_fps: 目标帧率，如果为None则使用原始帧率的3倍
+        input_video:  输入 MP4
+        output_video: 输出 MP4
+        rife_path:    rife‑ncnn‑vulkan 可执行文件；若 None 则按默认路径探测
+        target_fps:   目标帧率；若 None 则用原帧率 * 2
     """
-    # 确定RIFE可执行文件路径
+    # 1. 解析 RIFE 可执行文件位置 ------------------------------------------
     if rife_path is None:
         rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan")
         if not rife_path.exists():
             rife_path = Path("/runpod-volume/rife/rife-ncnn-vulkan")
-            if not rife_path.exists():
-                raise RuntimeError("未找到RIFE可执行文件，请指定正确路径")
-    
-    # 创建临时目录
+        if not rife_path.exists():
+            raise RuntimeError("未找到 rife-ncnn-vulkan，可执行文件路径不正确")
+
+    # 2. 创建临时目录 -------------------------------------------------------
     tmp_dir = Path("/tmp/rife_enhance") / str(time.time_ns())
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    input_frames = tmp_dir / "input"
+    input_frames  = tmp_dir / "input"
     output_frames = tmp_dir / "output"
-    input_frames.mkdir(parents=True)
-    output_frames.mkdir(parents=True)
-    
+    input_frames.mkdir(parents=True,  exist_ok=True)
+    output_frames.mkdir(parents=True, exist_ok=True)
+
     try:
-        # 获取原始视频帧率
-        result = subprocess.run(
-            ["ffprobe", "-v", "0", "-of", "csv=p=0", "-select_streams", "v:0",
-            "-show_entries", "stream=r_frame_rate", str(input_video)],
-            stdout=subprocess.PIPE,
-            text=True,
+        # 3. 获取原始帧率 ----------------------------------------------------
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "0",
+                "-of", "csv=p=0", "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate", str(input_video)
+            ],
+            stdout=subprocess.PIPE, text=True, check=True
+        )
+        orig_fps = float(Fraction(probe.stdout.strip()))  # e.g. "8/1" → 8.0
+
+        if target_fps is None:
+            target_fps = int(orig_fps * 2)
+
+        # 插帧倍数（保证为整数，通常是 2 或 4）
+        fps_multiple = max(1, round(target_fps / orig_fps))
+
+        log.info(f"视频插帧: 原 {orig_fps:.2f} fps → 目标 {target_fps} fps (×{fps_multiple})")
+
+        # 4. 拆帧 -----------------------------------------------------------
+        subprocess.run(
+            ["ffmpeg", "-i", str(input_video), str(input_frames / "%08d.png")],
             check=True
         )
-        orig_fps = eval(result.stdout.strip())  # 格式如 "30/1"
-        
-        # 如果未指定目标帧率，则使用原始帧率的3倍
-        if target_fps is None:
-            target_fps = orig_fps * 3
-        
-        # 计算插帧倍数（必须是整数）
-        fps_multiple = round(target_fps / orig_fps)
-        if fps_multiple < 1:
-            fps_multiple = 1
-        
-        log.info(f"视频增强: 原始帧率={orig_fps}, 目标帧率={target_fps}, 插帧倍数={fps_multiple}")
-        
-        # 1. 将视频拆分为帧
-        subprocess.run([
-            "ffmpeg", "-i", str(input_video),
-            str(input_frames / "%08d.png")
-        ], check=True)
-        
-        # 2. 使用RIFE插帧
-        rife_args = [
-            str(rife_path), "-i", str(input_frames), 
-            "-o", str(output_frames), "-m", "rife-v4.6"
-        ]
-        
-        # 添加时间步长参数
-        if fps_multiple > 1:
-            rife_args.extend(["-f", str(fps_multiple - 1)])
-            
-        subprocess.run(rife_args, check=True)
-        
-        # 3. 将帧重新合成为视频
-        subprocess.run([
-            "ffmpeg", "-framerate", str(target_fps),
-            "-i", str(output_frames / "%08d.png"),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", 
-            "-crf", "18", str(output_video)
-        ], check=True)
-        
-        log.info(f"视频增强完成: {output_video}")
-    
+
+        orig_count   = len(list(input_frames.glob("*.png")))
+        target_count = orig_count * fps_multiple
+        log.info(f"帧数: {orig_count} → {target_count}")
+
+        # 5. 调用 RIFE ------------------------------------------------------
+        subprocess.run(
+            [
+                str(rife_path),
+                "-i", str(input_frames),
+                "-o", str(output_frames),
+                "-m", "rife-v4.6",
+                "-n", str(target_count)    # <- 使用 -n 指定目标帧总数
+            ],
+            check=True
+        )
+
+        # 6. 合成视频 -------------------------------------------------------
+        subprocess.run(
+            [
+                "ffmpeg", "-framerate", str(target_fps),
+                "-i", str(output_frames / "%08d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-crf", "18", str(output_video)
+            ],
+            check=True
+        )
+        log.info(f"插帧完成: {output_video}")
+
     finally:
-        # 清理临时文件
-        try:
-            shutil.rmtree(tmp_dir)
-        except Exception as e:
-            log.warning(f"清理临时文件失败: {e}")
+        # 7. 清理临时目录 ---------------------------------------------------
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+# ---------------------------------------------------------------------
+# 推理核心
+# ---------------------------------------------------------------------
 
 def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     global _PIPELINE

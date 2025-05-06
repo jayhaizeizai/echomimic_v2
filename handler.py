@@ -265,6 +265,88 @@ def _decode_base64_audio(raw: str) -> Path:
 # 推理核心
 # ---------------------------------------------------------------------
 
+def _enhance_video_frames(input_video: Path, output_video: Path, rife_path: Optional[Path] = None, target_fps: Optional[int] = None) -> None:
+    """使用RIFE进行视频插帧增强
+    
+    Args:
+        input_video: 输入视频路径
+        output_video: 输出视频路径
+        rife_path: RIFE可执行文件路径，如果为None则使用默认路径
+        target_fps: 目标帧率，如果为None则使用原始帧率的3倍
+    """
+    # 确定RIFE可执行文件路径
+    if rife_path is None:
+        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan")
+        if not rife_path.exists():
+            rife_path = Path("/runpod-volume/rife/rife-ncnn-vulkan")
+            if not rife_path.exists():
+                raise RuntimeError("未找到RIFE可执行文件，请指定正确路径")
+    
+    # 创建临时目录
+    tmp_dir = Path("/tmp/rife_enhance") / str(time.time_ns())
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    input_frames = tmp_dir / "input"
+    output_frames = tmp_dir / "output"
+    input_frames.mkdir(parents=True)
+    output_frames.mkdir(parents=True)
+    
+    try:
+        # 获取原始视频帧率
+        result = subprocess.run(
+            ["ffprobe", "-v", "0", "-of", "csv=p=0", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate", str(input_video)],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        orig_fps = eval(result.stdout.strip())  # 格式如 "30/1"
+        
+        # 如果未指定目标帧率，则使用原始帧率的3倍
+        if target_fps is None:
+            target_fps = orig_fps * 3
+        
+        # 计算插帧倍数（必须是整数）
+        fps_multiple = round(target_fps / orig_fps)
+        if fps_multiple < 1:
+            fps_multiple = 1
+        
+        log.info(f"视频增强: 原始帧率={orig_fps}, 目标帧率={target_fps}, 插帧倍数={fps_multiple}")
+        
+        # 1. 将视频拆分为帧
+        subprocess.run([
+            "ffmpeg", "-i", str(input_video),
+            str(input_frames / "%08d.png")
+        ], check=True)
+        
+        # 2. 使用RIFE插帧
+        rife_args = [
+            str(rife_path), "-i", str(input_frames), 
+            "-o", str(output_frames), "-m", "rife-v4.6"
+        ]
+        
+        # 添加时间步长参数
+        if fps_multiple > 1:
+            rife_args.extend(["-f", str(fps_multiple - 1)])
+            
+        subprocess.run(rife_args, check=True)
+        
+        # 3. 将帧重新合成为视频
+        subprocess.run([
+            "ffmpeg", "-framerate", str(target_fps),
+            "-i", str(output_frames / "%08d.png"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", 
+            "-crf", "18", str(output_video)
+        ], check=True)
+        
+        log.info(f"视频增强完成: {output_video}")
+    
+    finally:
+        # 清理临时文件
+        try:
+            shutil.rmtree(tmp_dir)
+        except Exception as e:
+            log.warning(f"清理临时文件失败: {e}")
+
 def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     global _PIPELINE
     if _PIPELINE is None:
@@ -298,7 +380,12 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     ctx_o = int(payload.get("context_overlap", defaults.context_overlap))
     sr = int(payload.get("sample_rate", defaults.sample_rate))
     start = int(payload.get("start_idx", 0))
-
+    
+    # 插帧相关参数
+    interpolate = bool(payload.get("interpolate", False))
+    original_fps = int(payload.get("original_fps", fps))  # 如果未指定，使用fps
+    target_fps = int(payload.get("target_fps", original_fps * 3))  # 如果未指定，使用原始帧率的3倍
+    
     torch.manual_seed(seed)
     tmp = Path("/tmp/runpod") / str(time.time_ns())
     tmp.mkdir(parents=True, exist_ok=True)
@@ -416,7 +503,7 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
         generator=torch.manual_seed(seed),
         audio_sample_rate=sr,
         context_frames=ctx_f,
-        fps=fps,
+        fps=original_fps,  # 使用原始帧率生成视频
         context_overlap=ctx_o,
         start_idx=start,
     ).videos
@@ -427,19 +514,37 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     timestamp = int(time.time() * 1000)
     random_suffix = os.urandom(4).hex()
     out_mp4 = workspace_dir / f"vid_{timestamp}_{random_suffix}.mp4"
+    enhanced_mp4 = workspace_dir / f"vid_{timestamp}_{random_suffix}_enhanced.mp4"
 
     try:
-        save_videos_grid(videos, str(out_mp4), n_rows=1, fps=fps)
+        save_videos_grid(videos, str(out_mp4), n_rows=1, fps=original_fps)
         if out_mp4.stat().st_size < 1024:
             raise ValueError("生成的视频文件过小，可能生成失败")
-        with open(out_mp4, "rb") as f:
+            
+        final_video = out_mp4
+        
+        # 如果启用插帧，则对视频进行插帧处理
+        if interpolate and target_fps > original_fps:
+            try:
+                log.info(f"正在对视频进行插帧: {original_fps}fps → {target_fps}fps")
+                _enhance_video_frames(out_mp4, enhanced_mp4, target_fps=target_fps)
+                if enhanced_mp4.exists() and enhanced_mp4.stat().st_size > 1024:
+                    final_video = enhanced_mp4
+                else:
+                    log.warning("插帧失败，将使用原始视频")
+            except Exception as e:
+                log.error(f"插帧过程出错: {e}")
+                log.warning("将使用原始视频")
+        
+        with open(final_video, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
         return {"video": encoded}
     finally:
         try:
-            if out_mp4.exists():
-                out_mp4.unlink()
-                log.info(f"已清理临时文件: {out_mp4}")
+            for f in [out_mp4, enhanced_mp4]:
+                if f.exists():
+                    f.unlink()
+                    log.info(f"已清理临时文件: {f}")
         except Exception as e:
             log.warning(f"清理临时文件失败: {e}")
 

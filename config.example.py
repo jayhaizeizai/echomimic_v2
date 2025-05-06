@@ -25,4 +25,8 @@ DEFAULT_LENGTH = 240                     # 生成的视频长度（帧数）
 DEFAULT_CONTEXT_FRAMES = 12              # 上下文帧数
 DEFAULT_CONTEXT_OVERLAP = 3              # 上下文重叠帧数
 DEFAULT_SAMPLE_RATE = 16000              # 音频采样率
-DEFAULT_START_IDX = 0                    # 起始帧索引 
+DEFAULT_START_IDX = 0                    # 起始帧索引
+
+# 视频插帧参数
+ENABLE_INTERPOLATION = False             # 是否启用视频插帧
+TARGET_FPS = 72                          # 目标帧率（默认为原始帧率的3倍） 

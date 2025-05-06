@@ -6,7 +6,7 @@ import os
 import importlib.util
 import sys
 from pathlib import Path
-import binascii  # 新增导入
+import binascii
 from moviepy.editor import VideoFileClip, AudioFileClip
 
 # 尝试导入配置文件，如果不存在则提示用户创建
@@ -79,11 +79,11 @@ def main():
     audio_clip.close()
     
     # 获取fps参数
-    fps = getattr(config, 'DEFAULT_FPS', 24)
+    original_fps = getattr(config, 'DEFAULT_FPS', 24)
     
     # 根据音频时长和fps计算帧数
-    calculated_length = int(fps * audio_duration)
-    print(f"音频时长: {audio_duration}秒, FPS: {fps}, 计算得出的帧数: {calculated_length}")
+    calculated_length = int(original_fps * audio_duration)
+    print(f"音频时长: {audio_duration}秒, 原始FPS: {original_fps}, 计算得出的帧数: {calculated_length}")
     
     # 验证音频Base64编码
     validated_audio = validate_base64(audio_base64)
@@ -98,14 +98,24 @@ def main():
         "height": getattr(config, 'DEFAULT_HEIGHT', 768),
         "steps": getattr(config, 'DEFAULT_STEPS', 6),
         "guidance_scale": getattr(config, 'DEFAULT_GUIDANCE_SCALE', 1.0),
-        "fps": fps,
+        "fps": original_fps,  # 使用原始帧率作为fps参数
         "seed": getattr(config, 'DEFAULT_SEED', 420),
         "length": calculated_length,  # 使用计算得出的帧数而不是固定值
         "context_frames": getattr(config, 'DEFAULT_CONTEXT_FRAMES', 12),
         "context_overlap": getattr(config, 'DEFAULT_CONTEXT_OVERLAP', 3),
         "sample_rate": getattr(config, 'DEFAULT_SAMPLE_RATE', 16000),
-        "start_idx": getattr(config, 'DEFAULT_START_IDX', 0)
+        "start_idx": getattr(config, 'DEFAULT_START_IDX', 0),
+        # 插帧相关参数
+        "interpolate": getattr(config, 'ENABLE_INTERPOLATION', False),
+        "original_fps": original_fps,
+        "target_fps": getattr(config, 'TARGET_FPS', original_fps * 3)
     }
+    
+    # 输出插帧信息
+    if input_data["interpolate"]:
+        print(f"已启用视频插帧: 原始FPS={original_fps}, 目标FPS={input_data['target_fps']}")
+    else:
+        print("视频插帧已禁用")
     
     # 处理姿势数据（如果提供）
     if pose_path and os.path.exists(pose_path):
@@ -239,6 +249,10 @@ def process_result(data):
                         # 创建视频和音频对象
                         video_clip = VideoFileClip(silent_video_path)
                         audio_clip = AudioFileClip(audio_path)
+                        
+                        # 获取视频帧率并打印
+                        video_fps = video_clip.fps
+                        print(f"收到的视频帧率: {video_fps}fps")
                         
                         # 如果音频比视频长，裁剪音频
                         if audio_clip.duration > video_clip.duration:

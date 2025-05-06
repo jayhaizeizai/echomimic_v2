@@ -10,7 +10,7 @@ RUN apt-get update && \
         ca-certificates  \
         # 添加Vulkan相关库和依赖
         libvulkan1       \
-        vulkan-utils     \
+        vulkan-tools     \
         mesa-vulkan-drivers \
         libgl1-mesa-dev  \
         # NCNN可能需要的额外依赖

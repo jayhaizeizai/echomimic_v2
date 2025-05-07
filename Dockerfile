@@ -10,11 +10,13 @@ RUN apt-get update && \
         ca-certificates  \
         # 添加Vulkan相关库和依赖
         libvulkan1       \
-        vulkan-tools     \
-        mesa-vulkan-drivers \
-        libgl1-mesa-dev  \
+        vulkan-utils     \
     && rm -rf /var/lib/apt/lists/*
 
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+    
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------
 RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.11.0-2-Linux-x86_64.sh -O /tmp/miniconda.sh && \
     bash /tmp/miniconda.sh -b -p /opt/conda && \
@@ -42,6 +44,12 @@ RUN /opt/conda/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ---------- 设置RIFE权限 ----------
 RUN chmod +x /workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan
+
+# ────────────────────────────────────────────────────────────────
+# 8. 构建期自检（可选）：打印显卡摘要，方便确认 NVIDIA Vulkan 正常
+# ────────────────────────────────────────────────────────────────
+RUN echo "=== vulkaninfo --summary ===" && \
+    (vulkaninfo --summary | head || true)
 
 # ---------- 默认入口 ----------
 CMD ["python", "-u", "handler.py"]

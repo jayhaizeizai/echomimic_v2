@@ -10,7 +10,7 @@ RUN apt-get update && \
         ca-certificates  \
         # 添加Vulkan相关库和依赖
         libvulkan1       \
-        vulkan-utils     \
+        vulkan-tools     \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NVIDIA_VISIBLE_DEVICES=all \

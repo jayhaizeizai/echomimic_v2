@@ -9,12 +9,10 @@ FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
         git git-lfs ffmpeg wget ca-certificates \
         # Vulkan loader & cli
         libvulkan1 vulkan-tools \
-        # --- NVIDIA user‑mode libs：一次装 535 + 550 ---
-        #   * libnvidia-gl‑XXX  : OpenGL + vulkan ICD json
-        #   * nvidia-utils‑XXX  : nvidia_icd.json 软链接 + nv* 工具
+        # -------- NVIDIA user‑mode libs：一次装 535 + 550 ----------
         libnvidia-gl-535  libnvidia-gl-550  \
-        nvidia-utils-535 nvidia-utils-550   \
-        nvidia-vulkan-common                \
+        nvidia-utils-535  nvidia-utils-550  \
+        libnvidia-compute-535 libnvidia-compute-550 \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- 环境变量 ----------

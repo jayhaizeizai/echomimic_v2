@@ -268,8 +268,13 @@ from fractions import Fraction
 import subprocess, shutil, tempfile, time, math
 from pathlib import Path
 
-def _run(cmd):
-    subprocess.run(cmd, check=True)
+def _run(cmd, **kwargs):
+    """
+    subprocess.run() 的轻量封装，默认 check=True，
+    其余关键字参数（capture_output、text 等）可自由透传
+    """
+    kwargs.setdefault("check", True)
+    return subprocess.run(cmd, **kwargs)
 
 def _enhance_video_frames(
     input_video: Path,

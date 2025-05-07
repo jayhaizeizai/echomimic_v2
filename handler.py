@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from fractions import Fraction
 
+import textwrap
+
+
 import numpy as np
 import runpod
 import torch
@@ -71,6 +74,27 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("handler")
+
+
+def _dump_env():
+    log.info("==== ENV ====")
+    for k in ("NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES", "VK_ICD_FILENAMES"):
+        log.info("%s=%s", k, os.getenv(k))
+
+def _try(cmd):
+    log.info(">> %s", " ".join(cmd))
+    try:
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT, timeout=10)
+        log.info(textwrap.indent(out, "   "))
+    except subprocess.CalledProcessError as e:
+        log.warning("ret=%s\n%s", e.returncode, e.output)
+    except FileNotFoundError:
+        log.warning("command not found")
+
+_dump_env()
+_try(["ls", "-l", "/usr/local/nvidia/icd.d"])
+_try(["ls", "-l", "/usr/share/vulkan/icd.d"])
+_try(["vulkaninfo", "--summary"])
 
 # ---------------------------------------------------------------------
 # 模型下载与缓存

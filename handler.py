@@ -264,92 +264,94 @@ def _decode_base64_audio(raw: str) -> Path:
 
 
 
+from fractions import Fraction
+import subprocess, shutil, tempfile, time, math
+from pathlib import Path
+
+def _run(cmd):
+    subprocess.run(cmd, check=True)
+
 def _enhance_video_frames(
     input_video: Path,
     output_video: Path,
-    rife_path: Optional[Path] = None,
-    target_fps: Optional[int] = None
-) -> None:
-    """使用 RIFE 对视频做 2×/4× 等整数倍插帧
+    rife_path: Path | None = None,
+    target_fps: int | None = None,
+    multi_stage: bool = True,      # True = 两次 2×；False = 一次 4×/8×
+):
+    """把 input_video 插到 target_fps（默认原 fps ×2），专为 RTX 4090 调优"""
 
-    Args:
-        input_video:  输入 MP4
-        output_video: 输出 MP4
-        rife_path:    rife‑ncnn‑vulkan 可执行文件；若 None 则按默认路径探测
-        target_fps:   目标帧率；若 None 则用原帧率 * 2
-    """
-    # 1. 解析 RIFE 可执行文件位置 ------------------------------------------
+    # ------------------------------------------------ ① 设备 / 模型
     if rife_path is None:
-        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan")
-        if not rife_path.exists():
-            rife_path = Path("/runpod-volume/rife/rife-ncnn-vulkan")
-        if not rife_path.exists():
-            raise RuntimeError("未找到 rife-ncnn-vulkan，可执行文件路径不正确")
+        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20250112-ubuntu/rife-ncnn-vulkan")
+    if not rife_path.exists():
+        raise RuntimeError("找不到 rife‑ncnn‑vulkan 可执行文件")
 
-    # 2. 创建临时目录 -------------------------------------------------------
-    tmp_dir = Path("/tmp/rife_enhance") / str(time.time_ns())
-    input_frames  = tmp_dir / "input"
-    output_frames = tmp_dir / "output"
-    input_frames.mkdir(parents=True,  exist_ok=True)
-    output_frames.mkdir(parents=True, exist_ok=True)
+    # ------------------------------------------------ ② 解析原帧率
+    probe = _run([
+        "ffprobe","-v","0","-of","csv=p=0","-select_streams","v:0",
+        "-show_entries","stream=r_frame_rate", str(input_video)
+    ], capture_output=True, text=True)
+    orig_fps = float(Fraction(probe.stdout.strip()))
+    if target_fps is None:
+        target_fps = int(orig_fps * 2 + .5)
 
+    # ------------------------------------------------ ③ 计算倍数
+    mult = target_fps / orig_fps
+    if multi_stage:
+        stages = [2] * round(math.log(mult, 2))   # 例如 6→24 ==> [2,2]
+    else:
+        if abs(round(mult) - mult) > 1e-3:
+            raise ValueError("一次性插帧仅支持整数倍；请用 multi_stage=True")
+        stages = [round(mult)]
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="rife4090_"))
     try:
-        # 3. 获取原始帧率 ----------------------------------------------------
-        probe = subprocess.run(
-            [
-                "ffprobe", "-v", "0",
-                "-of", "csv=p=0", "-select_streams", "v:0",
-                "-show_entries", "stream=r_frame_rate", str(input_video)
-            ],
-            stdout=subprocess.PIPE, text=True, check=True
-        )
-        orig_fps = float(Fraction(probe.stdout.strip()))  # e.g. "8/1" → 8.0
+        src_video = Path(input_video)
 
-        if target_fps is None:
-            target_fps = int(orig_fps * 2)
+        # 多段插帧循环 ---------------------------------------------
+        for idx, m in enumerate(stages, 1):
+            step_dir = tmp_root / f"step{idx}"
+            inp_dir  = step_dir / "in";  inp_dir.mkdir(parents=True)
+            out_dir  = step_dir / "out"; out_dir.mkdir(parents=True)
 
-        # 插帧倍数（保证为整数，通常是 2 或 4）
-        fps_multiple = max(1, round(target_fps / orig_fps))
+            # 1) GPU 解码 → PNG（无压缩）
+            _run([
+                "ffmpeg", "-y",
+                "-hwaccel", "cuda", "-i", str(src_video),
+                "-vf", f"fps={orig_fps if idx==1 else orig_fps*2**(idx-1)},format=rgb24",
+                "-compression_level", "0",
+                str(inp_dir / "%08d.png")
+            ])
 
-        log.info(f"视频插帧: 原 {orig_fps:.2f} fps → 目标 {target_fps} fps (×{fps_multiple})")
+            frame_cnt = len(list(inp_dir.glob("*.png")))
+            target_cnt = frame_cnt * m
 
-        # 4. 拆帧 -----------------------------------------------------------
-        subprocess.run(
-            ["ffmpeg", "-i", str(input_video), str(input_frames / "%08d.png")],
-            check=True
-        )
-
-        orig_count   = len(list(input_frames.glob("*.png")))
-        target_count = orig_count * fps_multiple
-        log.info(f"帧数: {orig_count} → {target_count}")
-
-        # 5. 调用 RIFE ------------------------------------------------------
-        subprocess.run(
-            [
+            # 2) RIFE
+            _run([
                 str(rife_path),
-                "-i", str(input_frames),
-                "-o", str(output_frames),
+                "-i", str(inp_dir), "-o", str(out_dir),
                 "-m", "rife-v4.6",
-                "-n", str(target_count)    # <- 使用 -n 指定目标帧总数
-            ],
-            check=True
-        )
+                "-n", str(target_cnt),
+                "-g", "0",          # 显式选 GPU 0
+                "-x", "fp16",       # FP16 推理
+            ])
 
-        # 6. 合成视频 -------------------------------------------------------
-        subprocess.run(
-            [
-                "ffmpeg", "-framerate", str(target_fps),
-                "-i", str(output_frames / "%08d.png"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-crf", "18", str(output_video)
-            ],
-            check=True
-        )
-        log.info(f"插帧完成: {output_video}")
+            # 3) PNG → 中间 MP4（GPU 编码）
+            mid_mp4 = step_dir / "mid.mp4"
+            _run([
+                "ffmpeg", "-y", "-hwaccel", "cuda",
+                "-framerate", str(orig_fps * m if idx==1 else orig_fps*2**idx),
+                "-i", str(out_dir / "%08d.png"),
+                "-c:v", "h264_nvenc", "-preset", "p1", "-qp", "18",
+                "-pix_fmt", "yuv420p", str(mid_mp4)
+            ])
 
+            src_video = mid_mp4  # 下一轮作为输入
+
+        shutil.move(src_video, output_video)  # 最终文件
     finally:
-        # 7. 清理临时目录 ---------------------------------------------------
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
 
 # ---------------------------------------------------------------------
 # 推理核心

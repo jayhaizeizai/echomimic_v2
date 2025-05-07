@@ -282,7 +282,7 @@ def _enhance_video_frames(
 
     # ------------------------------------------------ ① 设备 / 模型
     if rife_path is None:
-        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20250112-ubuntu/rife-ncnn-vulkan")
+        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan")
     if not rife_path.exists():
         raise RuntimeError("找不到 rife‑ncnn‑vulkan 可执行文件")
 

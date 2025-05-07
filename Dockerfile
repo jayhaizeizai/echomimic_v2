@@ -1,26 +1,26 @@
 # ---------- 基础镜像 ----------
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-# ---------- 系统依赖 ----------
-    RUN apt-get update && \
+# ---------- 系统依赖 & NVIDIA Vulkan 用户态包 ----------
+    RUN set -eux; \
+    apt-get update; \
     apt-get install -y --no-install-recommends \
+        # 基础工具
         git git-lfs ffmpeg wget ca-certificates \
+        # Vulkan loader & cli
         libvulkan1 vulkan-tools \
-        # ---- NVIDIA Vulkan 用户态包：一次装两套 ----
-        libnvidia-gl-535         \
-        libnvidia-gl-550         \
-        nvidia-vulkan-icd-535    \
-        nvidia-vulkan-icd-550    \
-        nvidia-driver-libs       \
+        # --- NVIDIA user‑mode libs：一次装 535 + 550 ---
+        #   * libnvidia-gl‑XXX  : OpenGL + vulkan ICD json
+        #   * nvidia-utils‑XXX  : nvidia_icd.json 软链接 + nv* 工具
+        libnvidia-gl-535  libnvidia-gl-550  \
+        nvidia-utils-535 nvidia-utils-550   \
+        nvidia-vulkan-common                \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- 环境变量 ----------
 ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
-    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/local/nvidia/icd.d/nvidia_icd.json \
-    PATH=/opt/conda/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/local/nvidia/icd.d/nvidia_icd.json
 
     
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------

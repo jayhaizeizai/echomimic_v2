@@ -13,9 +13,37 @@ RUN apt-get update && \
         vulkan-tools     \
     && rm -rf /var/lib/apt/lists/*
 
+# ─────────────────────────────────────────────────────────────
+# 安装与宿主驱动主版本一致的 Vulkan 用户态包 (GLX + ICD)
+# - 读取 nvidia-smi driver_version → 535 / 550 / … 
+# - apt-get 安装 libnvidia-gl-<ver> nvidia-vulkan-icd-<ver> nvidia-driver-libs-<ver>
+#   若仓库里只有一个版本，命令仍能成功
+# ─────────────────────────────────────────────────────────────
+RUN set -eux; \
+    drv_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1); \
+    drv_major=${drv_ver%%.*}; \
+    echo ">>> Host driver $drv_ver → installing user libs $drv_major"; \
+    apt-get update; \
+    # 部分节点可能缺 535 或 550 的其中一个包，用 || true 链式容错
+    apt-get install -y --no-install-recommends \
+        libnvidia-gl-${drv_major} \
+        nvidia-vulkan-icd-${drv_major} \
+        nvidia-driver-libs-${drv_major} \
+    || (echo "Package set for $drv_major not found, falling back to meta packages" && \
+        apt-get install -y --no-install-recommends nvidia-vulkan-common nvidia-driver-libs); \
+    rm -rf /var/lib/apt/lists/*
+
+# 确保 Loader 能看到 ICD
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+
+# 可选：构建期立即验证
+RUN echo "=== vulkaninfo --summary ===" && \
+    (vulkaninfo --summary | head -n 10 || true)
+
 ENV NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=all \
-    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+    VK_ICD_FILENAMES=/usr/local/nvidia/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/nvidia_icd.json
+
     
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------
 RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.11.0-2-Linux-x86_64.sh -O /tmp/miniconda.sh && \

@@ -41,8 +41,6 @@ from diffusers import AutoencoderKL, DDIMScheduler, LCMScheduler
 from omegaconf import OmegaConf
 from PIL import Image
 from torch.nn import functional as F
-from model.pytorch_msssim import ssim_matlab
-import skvideo.io
 
 # EchoMimicV2 相关
 from src.models.unet_2d_condition import UNet2DConditionModel

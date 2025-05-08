@@ -332,28 +332,28 @@ def _enhance_video_frames(
     
     log.info(f"使用 RIFE 进行视频插帧，exp={exp}，从 {original_fps}fps 到 {original_fps*(2**exp)}fps")
     
-    # 根据用户提供的相对路径信息确定RIFE脚本位置
-    # handler.py 和 rife/ECCV2022-RIFE/inference_video.py 位于同一级目录
-    current_dir = Path(__file__).parent
-    rife_script = current_dir / "rife" / "ECCV2022-RIFE" / "inference_video.py"
-    
-    if not rife_script.exists():
-        log.warning(f"在预期路径 {rife_script} 未找到RIFE脚本，尝试其他路径...")
-        # 尝试其他可能的路径
-        alternative_paths = [
-            current_dir / "ECCV2022-RIFE" / "inference_video.py",
-            Path("rife/ECCV2022-RIFE/inference_video.py"),
-            Path("ECCV2022-RIFE/inference_video.py"),
-            Path("../rife/ECCV2022-RIFE/inference_video.py"),
-            Path("/workspace/rife/ECCV2022-RIFE/inference_video.py")
-        ]
-        for path in alternative_paths:
-            if path.exists():
-                rife_script = path
-                log.info(f"找到RIFE脚本: {rife_script}")
-                break
-        else:
-            raise FileNotFoundError("找不到 RIFE 的 inference_video.py 脚本")
+    # 验证 RIFE 环境
+    try:
+        # 检查 RIFE 目录是否存在
+        rife_dir = Path("/workspace/rife/ECCV2022-RIFE")
+        if not rife_dir.exists():
+            log.error(f"RIFE 目录不存在: {rife_dir}")
+            raise FileNotFoundError(f"RIFE 目录不存在: {rife_dir}")
+            
+        # 检查 RIFE 所需的模型文件
+        model_path = rife_dir / "train_log"
+        if not model_path.exists():
+            log.error(f"RIFE 模型目录不存在: {model_path}")
+            raise FileNotFoundError(f"RIFE 模型目录不存在: {model_path}")
+            
+        # 检查 inference_video.py 是否存在
+        rife_script = rife_dir / "inference_video.py"
+        if not rife_script.exists():
+            log.error(f"RIFE 脚本不存在: {rife_script}")
+            raise FileNotFoundError(f"RIFE 脚本不存在: {rife_script}")
+    except Exception as e:
+        log.error(f"RIFE 环境检查失败: {e}")
+        raise
     
     # 准备临时目录用于输出
     tmp_dir = Path(tempfile.mkdtemp(prefix="rife_"))
@@ -369,10 +369,20 @@ def _enhance_video_frames(
         ]
         log.info(f"执行命令: {' '.join(cmd)}")
         
-        subprocess.run(cmd, check=True, 
-                       stdout=subprocess.PIPE, 
-                       stderr=subprocess.STDOUT,
-                       text=True)
+        # 捕获并记录详细输出
+        process = subprocess.run(cmd, 
+                                capture_output=True, 
+                                text=True,
+                                check=False)  # 不立即检查返回码
+        
+        log.info(f"RIFE 标准输出:\n{process.stdout}")
+        if process.stderr:
+            log.error(f"RIFE 错误输出:\n{process.stderr}")
+        
+        # 检查返回码
+        if process.returncode != 0:
+            log.error(f"RIFE 命令返回非零状态码: {process.returncode}")
+            raise RuntimeError(f"RIFE 命令执行失败，状态码: {process.returncode}")
         
         # 检查输出视频是否存在
         if not tmp_output.exists() or tmp_output.stat().st_size == 0:
@@ -382,7 +392,7 @@ def _enhance_video_frames(
         _transfer_audio(input_video, tmp_output, output_video)
         
     except Exception as e:
-        log.error(f"RIFE 插帧过程中发生错误: {e}")
+        log.error(f"RIFE 插帧过程中发生错误: {str(e)}")
         # 如果插帧失败，则使用原始视频
         shutil.copy(input_video, output_video)
         log.warning("插帧失败，将使用原始视频")

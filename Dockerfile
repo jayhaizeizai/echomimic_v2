@@ -10,15 +10,10 @@ FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
         # Vulkan loader & cli
         libvulkan1 vulkan-tools \
         # -------- NVIDIA user‑mode libs：一次装 535 + 550 ----------
-        libnvidia-gl-535  libnvidia-gl-550  \
-        nvidia-utils-535  nvidia-utils-550  \
-        libnvidia-compute-535 libnvidia-compute-550 \
+        libnvidia-gl-550  \
+        nvidia-utils-550  \
+        libnvidia-compute-550 \
     && rm -rf /var/lib/apt/lists/*
-
-# ---------- 环境变量 ----------
-ENV NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
-    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/local/nvidia/icd.d/nvidia_icd.json
 
     
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------

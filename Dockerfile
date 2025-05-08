@@ -1,19 +1,28 @@
 # ---------- 基础镜像 ----------
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-# ---------- 系统依赖 & NVIDIA Vulkan 用户态包 ----------
-    RUN set -eux; \
-    apt-get update; \
+# ────────────────────────────────────────────────────────────────
+# 2. 环境变量
+#    - NVIDIA_DRIVER_CAPABILITIES 必须含 graphics/video，才能挂载 Vulkan
+#    - PATH/PIP_NO_CACHE_DIR 等常用设置
+# ────────────────────────────────────────────────────────────────
+ENV NVIDIA_DRIVER_CAPABILITIES=all \
+    DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/conda/bin:$PATH
+
+# ────────────────────────────────────────────────────────────────
+# 3. 系统依赖 & Vulkan Loader
+#    ⚠️ 只装 libvulkan1 / vulkan-tools
+#    ⚠️ 不再安装 libnvidia-*
+# ────────────────────────────────────────────────────────────────
+RUN set -eux; \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-        # 基础工具
         git git-lfs ffmpeg wget ca-certificates \
-        # Vulkan loader & cli
-        libvulkan1 vulkan-tools \
-        # -------- NVIDIA user‑mode libs：一次装 535 + 550 ----------
-        libnvidia-gl-550  \
-        nvidia-utils-550  \
-        libnvidia-compute-550 \
-    && rm -rf /var/lib/apt/lists/*
+        libvulkan1 vulkan-tools && \
+    rm -rf /var/lib/apt/lists/*
 
     
 # ---------- 安装Miniconda (指定Python 3.10版本) ----------
@@ -21,10 +30,6 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.11.0-2-Linux-x8
     bash /tmp/miniconda.sh -b -p /opt/conda && \
     rm /tmp/miniconda.sh
 
-# ---------- 把 conda 放到 PATH，后面所有 RUN 都能找到正确的 conda / pip ----------
-ENV PATH=/opt/conda/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
 
 # ---------- 关闭 prompt，避免构建卡住 ----------
 RUN conda config --set always_yes yes --set changeps1 no

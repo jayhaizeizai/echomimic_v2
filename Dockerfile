@@ -36,6 +36,9 @@ RUN conda config --set always_yes yes --set changeps1 no
 WORKDIR /workspace
 COPY . /workspace
 
+RUN git lfs install && \
+    git lfs pull
+
 # ---------- 安装依赖 ----------
 # 1) 先更新 pip（conda 自带 pip，但通常较旧）
 RUN conda install pip -n base

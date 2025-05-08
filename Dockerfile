@@ -13,15 +13,13 @@ ENV NVIDIA_DRIVER_CAPABILITIES=all \
     PATH=/opt/conda/bin:$PATH
 
 # ────────────────────────────────────────────────────────────────
-# 3. 系统依赖 & Vulkan Loader
-#    ⚠️ 只装 libvulkan1 / vulkan-tools
-#    ⚠️ 不再安装 libnvidia-*
+# 3. 系统依赖 
 # ────────────────────────────────────────────────────────────────
 RUN set -eux; \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         git git-lfs ffmpeg wget ca-certificates \
-        libvulkan1 vulkan-tools && \
+         && \
     rm -rf /var/lib/apt/lists/*
 
     
@@ -46,14 +44,6 @@ RUN conda install pip -n base
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/conda/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
-# ---------- 设置RIFE权限 ----------
-RUN chmod +x /workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan
-
-# ────────────────────────────────────────────────────────────────
-# 8. 构建期自检（可选）：打印显卡摘要，方便确认 NVIDIA Vulkan 正常
-# ────────────────────────────────────────────────────────────────
-RUN echo "=== vulkaninfo --summary ===" && \
-    (vulkaninfo --summary | head || true)
 
 # ---------- 默认入口 ----------
 CMD ["python", "-u", "handler.py"]

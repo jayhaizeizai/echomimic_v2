@@ -40,6 +40,9 @@ import torch
 from diffusers import AutoencoderKL, DDIMScheduler, LCMScheduler
 from omegaconf import OmegaConf
 from PIL import Image
+from torch.nn import functional as F
+from model.pytorch_msssim import ssim_matlab
+import skvideo.io
 
 # EchoMimicV2 相关
 from src.models.unet_2d_condition import UNet2DConditionModel
@@ -303,84 +306,114 @@ def _run(cmd, **kwargs):
 def _enhance_video_frames(
     input_video: Path,
     output_video: Path,
-    rife_path: Path | None = None,
     target_fps: int | None = None,
-    multi_stage: bool = True,      # True = 两次 2×；False = 一次 4×/8×
+    original_fps: int | None = None,
 ):
-    """把 input_video 插到 target_fps（默认原 fps ×2），专为 RTX 4090 调优"""
-
-    # ------------------------------------------------ ① 设备 / 模型
-    if rife_path is None:
-        rife_path = Path("/workspace/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan")
-    if not rife_path.exists():
-        raise RuntimeError("找不到 rife‑ncnn‑vulkan 可执行文件")
-
-    # ------------------------------------------------ ② 解析原帧率
-    probe = _run([
-        "ffprobe","-v","0","-of","csv=p=0","-select_streams","v:0",
-        "-show_entries","stream=r_frame_rate", str(input_video)
-    ], capture_output=True, text=True)
-    orig_fps = float(Fraction(probe.stdout.strip()))
-    if target_fps is None:
-        target_fps = int(orig_fps * 2 + .5)
-
-    # ------------------------------------------------ ③ 计算倍数
-    mult = target_fps / orig_fps
-    if multi_stage:
-        stages = [2] * round(math.log(mult, 2))   # 例如 6→24 ==> [2,2]
-    else:
-        if abs(round(mult) - mult) > 1e-3:
-            raise ValueError("一次性插帧仅支持整数倍；请用 multi_stage=True")
-        stages = [round(mult)]
-
-    tmp_root = Path(tempfile.mkdtemp(prefix="rife4090_"))
+    """使用 RIFE 模型简化插帧，类似于命令行调用方式"""
+    
+    # 确定插帧倍率
+    if original_fps is None or target_fps is None:
+        # 获取原始视频帧率
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", 
+             "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", str(input_video)],
+            capture_output=True, text=True, check=True
+        )
+        fps_str = probe.stdout.strip()
+        num, den = map(int, fps_str.split('/'))
+        original_fps = num / den if den else num
+        
+        if target_fps is None:
+            target_fps = original_fps * 2
+    
+    # 计算幂次
+    mult = target_fps / original_fps
+    exp = int(np.log2(mult))
+    if 2**exp != mult:
+        log.warning(f"目标帧率 {target_fps} 不是原帧率 {original_fps} 的2的幂次倍，将使用 {2**exp}x")
+    
+    log.info(f"使用 RIFE 进行视频插帧，exp={exp}，从 {original_fps}fps 到 {original_fps*(2**exp)}fps")
+    
+    # 根据用户提供的相对路径信息确定RIFE脚本位置
+    # handler.py 和 rife/ECCV2022-RIFE/inference_video.py 位于同一级目录
+    current_dir = Path(__file__).parent
+    rife_script = current_dir / "rife" / "ECCV2022-RIFE" / "inference_video.py"
+    
+    if not rife_script.exists():
+        log.warning(f"在预期路径 {rife_script} 未找到RIFE脚本，尝试其他路径...")
+        # 尝试其他可能的路径
+        alternative_paths = [
+            current_dir / "ECCV2022-RIFE" / "inference_video.py",
+            Path("rife/ECCV2022-RIFE/inference_video.py"),
+            Path("ECCV2022-RIFE/inference_video.py"),
+            Path("../rife/ECCV2022-RIFE/inference_video.py"),
+            Path("/workspace/rife/ECCV2022-RIFE/inference_video.py")
+        ]
+        for path in alternative_paths:
+            if path.exists():
+                rife_script = path
+                log.info(f"找到RIFE脚本: {rife_script}")
+                break
+        else:
+            raise FileNotFoundError("找不到 RIFE 的 inference_video.py 脚本")
+    
+    # 准备临时目录用于输出
+    tmp_dir = Path(tempfile.mkdtemp(prefix="rife_"))
+    tmp_output = tmp_dir / "rife_output.mp4"
+    
     try:
-        src_video = Path(input_video)
-
-        # 多段插帧循环 ---------------------------------------------
-        for idx, m in enumerate(stages, 1):
-            step_dir = tmp_root / f"step{idx}"
-            inp_dir  = step_dir / "in";  inp_dir.mkdir(parents=True)
-            out_dir  = step_dir / "out"; out_dir.mkdir(parents=True)
-
-            # 1) GPU 解码 → PNG（无压缩）
-            _run([
-                "ffmpeg", "-y",
-                "-hwaccel", "cuda", "-i", str(src_video),
-                "-vf", f"fps={orig_fps if idx==1 else orig_fps*2**(idx-1)},format=rgb24",
-                "-compression_level", "0",
-                str(inp_dir / "%08d.png")
-            ])
-
-            frame_cnt = len(list(inp_dir.glob("*.png")))
-            target_cnt = frame_cnt * m
-
-            # 2) RIFE
-            _run([
-                str(rife_path),
-                "-i", str(inp_dir), "-o", str(out_dir),
-                "-m", "rife-v4.6",
-                "-n", str(target_cnt),
-                "-g", "0",          # 显式选 GPU 0
-                "-x", "fp16",       # FP16 推理
-            ])
-
-            # 3) PNG → 中间 MP4（GPU 编码）
-            mid_mp4 = step_dir / "mid.mp4"
-            _run([
-                "ffmpeg", "-y", "-hwaccel", "cuda",
-                "-framerate", str(orig_fps * m if idx==1 else orig_fps*2**idx),
-                "-i", str(out_dir / "%08d.png"),
-                "-c:v", "h264_nvenc", "-preset", "p1", "-qp", "18",
-                "-pix_fmt", "yuv420p", str(mid_mp4)
-            ])
-
-            src_video = mid_mp4  # 下一轮作为输入
-
-        shutil.move(src_video, output_video)  # 最终文件
+        # 调用 RIFE 进行插帧
+        cmd = [
+            "python", str(rife_script),
+            "--exp", str(exp),
+            "--video", str(input_video),
+            "--output", str(tmp_output)
+        ]
+        log.info(f"执行命令: {' '.join(cmd)}")
+        
+        subprocess.run(cmd, check=True, 
+                       stdout=subprocess.PIPE, 
+                       stderr=subprocess.STDOUT,
+                       text=True)
+        
+        # 检查输出视频是否存在
+        if not tmp_output.exists() or tmp_output.stat().st_size == 0:
+            raise RuntimeError("RIFE 插帧失败，输出文件不存在或为空")
+        
+        # 转移音频
+        _transfer_audio(input_video, tmp_output, output_video)
+        
+    except Exception as e:
+        log.error(f"RIFE 插帧过程中发生错误: {e}")
+        # 如果插帧失败，则使用原始视频
+        shutil.copy(input_video, output_video)
+        log.warning("插帧失败，将使用原始视频")
+    
     finally:
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        # 清理临时文件
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
+def _transfer_audio(source_video, target_video, final_output):
+    """从源视频转移音频到目标视频"""
+    try:
+        # 合并音频和视频
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(target_video), 
+            "-i", str(source_video), 
+            "-c:v", "copy", "-c:a", "aac", 
+            "-map", "0:v:0", "-map", "1:a:0?",
+            str(final_output)
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # 检查输出文件
+        if not final_output.exists() or final_output.stat().st_size == 0:
+            log.warning("音频合并失败，将使用无音频视频")
+            shutil.copy(target_video, final_output)
+            
+    except Exception as e:
+        log.warning(f"音频转移失败: {e}")
+        # 如果音频转移失败，直接使用无音频的视频
+        shutil.copy(target_video, final_output)
 
 # ---------------------------------------------------------------------
 # 推理核心

@@ -334,18 +334,35 @@ def _enhance_video_frames(
     
     # 验证 RIFE 环境
     try:
-        # 检查 RIFE 目录是否存在
-        rife_dir = Path("/workspace/rife/ECCV2022-RIFE")
+        # 使用相对路径而非绝对路径
+        # 根据handler.py的位置获取RIFE目录
+        current_dir = Path(__file__).parent  # handler.py所在目录
+        rife_dir = current_dir / "rife" / "ECCV2022-RIFE"
+        
+        log.info(f"正在查找RIFE目录: {rife_dir}")
+        
         if not rife_dir.exists():
             log.error(f"RIFE 目录不存在: {rife_dir}")
-            raise FileNotFoundError(f"RIFE 目录不存在: {rife_dir}")
-            
+            # 尝试备用路径
+            alt_path = Path("rife/ECCV2022-RIFE")
+            if alt_path.exists():
+                rife_dir = alt_path
+                log.info(f"找到备用RIFE目录: {rife_dir}")
+            else:
+                raise FileNotFoundError(f"RIFE 目录不存在: {rife_dir}")
+        
         # 检查 RIFE 所需的模型文件
         model_path = rife_dir / "train_log"
         if not model_path.exists():
             log.error(f"RIFE 模型目录不存在: {model_path}")
-            raise FileNotFoundError(f"RIFE 模型目录不存在: {model_path}")
-            
+            # 尝试当前目录下的train_log路径
+            alt_model_path = current_dir / "rife" / "ECCV2022-RIFE" / "train_log"
+            if alt_model_path.exists():
+                model_path = alt_model_path
+                log.info(f"找到备用模型目录: {model_path}")
+            else:
+                raise FileNotFoundError(f"RIFE 模型目录不存在: {model_path}")
+        
         # 检查 inference_video.py 是否存在
         rife_script = rife_dir / "inference_video.py"
         if not rife_script.exists():

@@ -16,9 +16,7 @@ ffmpeg-4.4-amd64-static/
 *.bin
 *.safetensors
 
-# 排除Git相关文件
-.git/
-.gitattributes
+
 
 # 排除Python缓存
 **/__pycache__/

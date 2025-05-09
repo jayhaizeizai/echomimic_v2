@@ -379,18 +379,18 @@ def _enhance_video_frames(
     try:
         # 调用 RIFE 进行插帧
         cmd = [
-            "python", str(rife_script),
+            "python", "inference_video.py",  # 只使用文件名
             "--exp", str(exp),
             "--video", str(input_video),
             "--output", str(tmp_output)
         ]
         log.info(f"执行命令: {' '.join(cmd)}")
         
-        # 捕获并记录详细输出
         process = subprocess.run(cmd, 
                                 capture_output=True, 
                                 text=True,
-                                check=False)  # 不立即检查返回码
+                                cwd=str(rife_dir),  # 设置工作目录
+                                check=False)
         
         log.info(f"RIFE 标准输出:\n{process.stdout}")
         if process.stderr:

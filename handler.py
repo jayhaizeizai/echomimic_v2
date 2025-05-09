@@ -305,26 +305,47 @@ def _patch_skvideo():
     """修补scikit-video库以适应新版NumPy"""
     try:
         import os
-        # 找到ffmpeg.py文件
+        import glob
+        # 找到skvideo包的位置
         import skvideo
-        ffmpeg_py = os.path.join(os.path.dirname(skvideo.__file__), "io", "ffmpeg.py")
+        skvideo_dir = os.path.dirname(skvideo.__file__)
         
-        if os.path.exists(ffmpeg_py):
+        # 需要替换的过时别名
+        replacements = [
+            ("np.int(", "int("),
+            ("np.float(", "float("),
+            ("np.bool(", "bool("),
+            ("np.str(", "str("),
+            ("np.unicode(", "str("),
+        ]
+        
+        # 查找所有Python文件
+        py_files = glob.glob(os.path.join(skvideo_dir, "**", "*.py"), recursive=True)
+        patch_count = 0
+        
+        for py_file in py_files:
             # 读取文件内容
-            with open(ffmpeg_py, 'r') as f:
+            with open(py_file, 'r') as f:
                 content = f.read()
             
-            # 替换np.float为float
-            patched_content = content.replace("np.float(", "float(")
+            # 应用所有替换
+            modified = False
+            for old, new in replacements:
+                if old in content:
+                    content = content.replace(old, new)
+                    modified = True
             
-            # 写回文件
-            with open(ffmpeg_py, 'w') as f:
-                f.write(patched_content)
+            # 如果文件被修改，写回
+            if modified:
+                with open(py_file, 'w') as f:
+                    f.write(content)
+                patch_count += 1
                 
-            log.info("成功修补scikit-video库以适应新版NumPy")
+        if patch_count > 0:
+            log.info(f"成功修补 {patch_count} 个scikit-video文件以适应新版NumPy")
             return True
         else:
-            log.error(f"无法找到scikit-video的ffmpeg.py文件: {ffmpeg_py}")
+            log.warning("未找到需要修补的scikit-video文件")
             return False
     except Exception as e:
         log.error(f"修补scikit-video失败: {e}")

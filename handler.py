@@ -301,6 +301,35 @@ def _run(cmd, **kwargs):
     kwargs.setdefault("check", True)
     return subprocess.run(cmd, **kwargs)
 
+def _patch_skvideo():
+    """修补scikit-video库以适应新版NumPy"""
+    try:
+        import os
+        # 找到ffmpeg.py文件
+        import skvideo
+        ffmpeg_py = os.path.join(os.path.dirname(skvideo.__file__), "io", "ffmpeg.py")
+        
+        if os.path.exists(ffmpeg_py):
+            # 读取文件内容
+            with open(ffmpeg_py, 'r') as f:
+                content = f.read()
+            
+            # 替换np.float为float
+            patched_content = content.replace("np.float(", "float(")
+            
+            # 写回文件
+            with open(ffmpeg_py, 'w') as f:
+                f.write(patched_content)
+                
+            log.info("成功修补scikit-video库以适应新版NumPy")
+            return True
+        else:
+            log.error(f"无法找到scikit-video的ffmpeg.py文件: {ffmpeg_py}")
+            return False
+    except Exception as e:
+        log.error(f"修补scikit-video失败: {e}")
+        return False
+
 def _enhance_video_frames(
     input_video: Path,
     output_video: Path,
@@ -308,6 +337,10 @@ def _enhance_video_frames(
     original_fps: int | None = None,
 ):
     """使用 RIFE 模型简化插帧，类似于命令行调用方式"""
+    
+    # 修补scikit-video
+    if not _patch_skvideo():
+        log.warning("无法修补scikit-video，插帧可能失败")
     
     # 确定插帧倍率
     if original_fps is None or target_fps is None:

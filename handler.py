@@ -459,8 +459,8 @@ def _enhance_video_frames(
         if not tmp_output.exists() or tmp_output.stat().st_size == 0:
             raise RuntimeError("RIFE 插帧失败，输出文件不存在或为空")
         
-        # 转移音频
-        _transfer_audio(input_video, tmp_output, output_video)
+        # 转移音频并设置正确帧率
+        _transfer_audio(input_video, tmp_output, output_video, target_fps=original_fps*(2**exp))
         
     except Exception as e:
         log.error(f"RIFE 插帧过程中发生错误: {str(e)}")
@@ -472,27 +472,67 @@ def _enhance_video_frames(
         # 清理临时文件
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-def _transfer_audio(source_video, target_video, final_output):
-    """从源视频转移音频到目标视频"""
+def _transfer_audio(source_video, target_video, final_output, target_fps=None):
+    """从源视频转移音频到目标视频，同时确保正确的帧率"""
     try:
-        # 合并音频和视频
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(target_video), 
-            "-i", str(source_video), 
-            "-c:v", "copy", "-c:a", "aac", 
-            "-map", "0:v:0", "-map", "1:a:0?",
-            str(final_output)
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 检查源视频是否有音频轨道
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", 
+             "stream=codec_type", "-of", "default=noprint_wrappers=1:nokey=1", str(source_video)],
+            capture_output=True, text=True, check=False
+        )
         
-        # 检查输出文件
-        if not final_output.exists() or final_output.stat().st_size == 0:
-            log.warning("音频合并失败，将使用无音频视频")
-            shutil.copy(target_video, final_output)
+        has_audio = probe.returncode == 0 and "audio" in probe.stdout.strip()
+        
+        # 构建ffmpeg命令
+        cmd = ["ffmpeg", "-y"]
+        
+        # 添加输入
+        cmd.extend(["-i", str(target_video)])
+        
+        # 设置帧率参数(如果提供)
+        if target_fps:
+            cmd.extend(["-r", str(target_fps)])
+        
+        # 如果有音频，添加音频输入
+        if has_audio:
+            cmd.extend(["-i", str(source_video)])
+            # 视频设置
+            cmd.extend(["-c:v", "copy"])
+            # 音频设置
+            cmd.extend(["-c:a", "aac"])
+            # 映射流
+            cmd.extend(["-map", "0:v:0", "-map", "1:a:0?"])
+            # 取最短长度
+            cmd.extend(["-shortest"])
+        else:
+            # 没有音频，只处理视频
+            cmd.extend(["-c:v", "copy"])
+        
+        # 添加输出文件
+        cmd.append(str(final_output))
+        
+        # 执行命令
+        log.info(f"执行封装命令: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
     except Exception as e:
-        log.warning(f"音频转移失败: {e}")
-        # 如果音频转移失败，直接使用无音频的视频
-        shutil.copy(target_video, final_output)
+        log.warning(f"视频处理失败: {e}")
+        # 发生错误时，尝试最简单的复制
+        try:
+            if target_fps:
+                # 简单复制但设置帧率
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(target_video),
+                    "-r", str(target_fps), "-c:v", "copy",
+                    str(final_output)
+                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            else:
+                # 直接复制
+                shutil.copy(target_video, final_output)
+        except Exception as copy_error:
+            log.error(f"备份复制也失败: {copy_error}")
+            shutil.copy(target_video, final_output)
 
 # ---------------------------------------------------------------------
 # 推理核心

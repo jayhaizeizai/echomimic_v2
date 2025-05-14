@@ -432,9 +432,11 @@ def _enhance_video_frames(
     
     try:
         # 调用 RIFE 进行插帧
+        target_fps_out = int(original_fps * (2 ** exp))   # 例如 24 → 48
         cmd = [
-            "python", "inference_video.py",  # 只使用文件名
+            "python", "inference_video.py",
             "--exp", str(exp),
+            "--fps", str(target_fps_out),        # ★ 直接告诉 RIFE 输出多少 fps
             "--video", str(input_video),
             "--output", str(tmp_output)
         ]

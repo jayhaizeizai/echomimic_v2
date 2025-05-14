@@ -548,7 +548,7 @@ def _infer(payload: Dict[str, Any]) -> Dict[str, Any]:
         _PIPELINE = _build_pipeline()
 
     defaults = OmegaConf.load(str(_CONFIG_YAML)).default_params
-    refimg = Path("assets/refimag_teacher_v6.png")
+    refimg = Path("assets/refimag_teacher_v5.png")
     if not refimg.exists():
         raise FileNotFoundError(f"参考图像不存在: {refimg}")
 

@@ -490,24 +490,24 @@ def _transfer_audio(source_video, target_video, final_output, target_fps=None):
         # 添加输入
         cmd.extend(["-i", str(target_video)])
         
-        # 设置帧率参数(如果提供)
+        # --- 改帧率时必须重新编码 ---
         if target_fps:
-            cmd.extend(["-r", str(target_fps)])
-        
-        # 如果有音频，添加音频输入
+            cmd.extend([
+                "-vf", f"fps={target_fps}",   # 用滤镜重采帧率
+                "-c:v", "libx264",            # 重新编码
+                "-pix_fmt", "yuv420p",
+            ])
+        else:
+            cmd.extend(["-c:v", "copy"])      # 不改帧率才用流复制
+
+        # 音频参数
         if has_audio:
             cmd.extend(["-i", str(source_video)])
-            # 视频设置
-            cmd.extend(["-c:v", "copy"])
-            # 音频设置
-            cmd.extend(["-c:a", "aac"])
-            # 映射流
-            cmd.extend(["-map", "0:v:0", "-map", "1:a:0?"])
-            # 取最短长度
-            cmd.extend(["-shortest"])
-        else:
-            # 没有音频，只处理视频
-            cmd.extend(["-c:v", "copy"])
+            if target_fps:
+                cmd.extend(["-c:a", "copy"])  # 重新编码时音频直接copy
+            else:
+                cmd.extend(["-c:a", "copy"])  # 流复制时音频也copy
+            cmd.extend(["-map", "0:v:0", "-map", "1:a:0?", "-shortest"])
         
         # 添加输出文件
         cmd.append(str(final_output))
@@ -521,10 +521,10 @@ def _transfer_audio(source_video, target_video, final_output, target_fps=None):
         # 发生错误时，尝试最简单的复制
         try:
             if target_fps:
-                # 简单复制但设置帧率
+                # 简单重新编码但设置帧率
                 subprocess.run([
                     "ffmpeg", "-y", "-i", str(target_video),
-                    "-r", str(target_fps), "-c:v", "copy",
+                    "-vf", f"fps={target_fps}", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     str(final_output)
                 ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             else:
